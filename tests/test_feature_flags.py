@@ -13,6 +13,8 @@ def test_default_flags(feature_flags):
     assert feature_flags.is_enabled("enable_rate_limiting") == True
     assert feature_flags.is_enabled("enable_heartbeat") == True
     assert feature_flags.is_enabled("enable_resource_monitoring") == True
+    assert feature_flags.is_enabled("use_browser_automation") == False  # Default to API
+    assert feature_flags.is_enabled("browser_auto_retry") == True      # Default to retry enabled
 
 def test_unknown_flag(feature_flags):
     """Test behavior with unknown flag."""
