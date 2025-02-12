@@ -10,18 +10,21 @@ A powerful system that converts text scripts into multi-voice podcasts and autom
   - Intelligent pause timing based on context
   - Character-specific voice profiles
   - Background music integration
+  - Resource monitoring and limits
 
 - **AI Voice Generation**
   - High-quality voice synthesis using ElevenLabs
   - Unique voice profiles for each character
   - Natural-sounding conversations
   - Sentiment-aware voice modulation
+  - Configurable rate limiting
 
 - **Audio Processing**
   - Professional audio mixing
   - Background music support
   - Automatic audio cleanup and optimization
   - Dynamic pause adjustment
+  - Memory usage optimization
 
 - **Twitter Spaces Integration**
   - Multi-account character support
@@ -29,6 +32,15 @@ A powerful system that converts text scripts into multi-voice podcasts and autom
   - Automated Space creation and management
   - Scheduled broadcasting support
   - Clear AI-generated content disclosure
+  - WebSocket-based real-time updates
+
+- **System Features**
+  - Resource monitoring and management
+  - API rate limiting with backoff
+  - WebSocket connection health monitoring
+  - Secure credential management
+  - Feature flag system for gradual rollout
+  - Encrypted configuration support
 
 ## Setup
 
@@ -107,7 +119,7 @@ curl -X POST http://localhost:8000/api/v1/generate/1
 curl -X POST http://localhost:8000/api/v1/publish/1
 ```
 
-## Real-Time Interaction
+## Real-Time Monitoring
 
 Monitor and interact with Spaces in real-time using WebSocket connections:
 
@@ -117,27 +129,105 @@ import websockets
 import json
 
 async def monitor_space(space_id: str, character: str = "Host"):
+    """Monitor a Space's events in real-time."""
     uri = f"ws://localhost:8000/api/v1/spaces/{space_id}/events?character={character}"
-    async with websockets.connect(uri) as websocket:
-        while True:
-            event = await websocket.recv()
-            data = json.loads(event)
-            print(f"Space update: {data}")
+    
+    while True:
+        try:
+            async with websockets.connect(uri) as websocket:
+                print(f"Connected to Space {space_id}")
+                
+                while True:
+                    event = await websocket.recv()
+                    data = json.loads(event)
+                    
+                    if data["type"] == "ping":
+                        # Respond to heartbeat
+                        await websocket.send(json.dumps({"type": "pong"}))
+                        continue
+                    
+                    print(f"Space update: {data}")
+                    
+        except websockets.ConnectionClosed:
+            print("Connection lost. Reconnecting...")
+            await asyncio.sleep(1)
+        except Exception as e:
+            print(f"Error: {str(e)}")
+            await asyncio.sleep(5)
 
 # Usage
 asyncio.run(monitor_space("your_space_id", "Alice"))
 ```
 
-## Important Notes
+### Event Types
 
-- **API Keys**: All voice generation and Twitter API keys must be stored securely in environment variables
-- **Storage**: Audio files are stored temporarily and automatically cleaned up after processing
-- **Rate Limits**: The system implements error handling for API rate limits
-- **AI Disclosure**: All Twitter Spaces automatically include clear disclosure of AI-generated content
-- **Content Moderation**: Implement appropriate content filtering before publishing
-- **Resource Usage**: NLP optimization features require significant CPU/memory resources
-- **Account Management**: Multiple Twitter accounts need secure credential management
-- **WebSocket Connections**: Implement proper error handling for real-time connections
+The WebSocket endpoint emits the following event types:
+
+1. `space_update`: Space status updates
+```json
+{
+    "type": "space_update",
+    "data": {
+        "space_id": "123",
+        "state": "live",
+        "participant_count": 10
+    }
+}
+```
+
+2. `ping`: Heartbeat event (every 30 seconds)
+```json
+{
+    "type": "ping"
+}
+```
+
+### Connection Management
+
+- The connection includes automatic reconnection with exponential backoff
+- Heartbeat mechanism ensures connection health
+- Events are delivered in real-time with minimal latency
+- Multiple clients can monitor the same Space
+
+## Technical Details
+
+### Resource Management
+- CPU and memory usage monitoring
+- Configurable resource limits
+- Process count tracking
+- Automatic cleanup of temporary files
+- Memory optimization for large scripts
+
+### Rate Limiting
+- Sliding window rate limiting
+- Configurable window size and request limits
+- Per-character rate tracking
+- Exponential backoff for retries
+- Rate limit status monitoring
+
+### Security
+- Encrypted configuration storage
+- Secure credential management
+- API key rotation support
+- Audit logging capabilities
+- Environment-based configuration
+
+### Feature Flags
+- Gradual feature rollout
+- Environment-based toggles
+- Per-feature monitoring
+- A/B testing support
+- Real-time feature updates
+
+### Important Notes
+- **API Keys**: All credentials are stored securely and can be encrypted
+- **Storage**: Temporary files are automatically cleaned up
+- **Rate Limits**: Built-in protection against API rate limits
+- **AI Disclosure**: Automatic AI content disclosure in Spaces
+- **Resource Usage**: Configurable resource limits prevent overload
+- **Account Management**: Secure multi-account credential handling
+- **WebSocket Connections**: Robust error handling with reconnection
+- **Monitoring**: Real-time health and performance tracking
 
 ## Development
 
