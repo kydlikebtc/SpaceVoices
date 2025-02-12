@@ -1117,27 +1117,29 @@ class TwitterBrowserService:
         }
         
         for char in text:
+            base_typing_speed = random.uniform(0.1, 0.3)
+            
             # Occasional typo (5% chance)
             if char.lower() in nearby_keys and random.random() < 0.05:
                 typo = random.choice(nearby_keys[char.lower()])
                 element.send_keys(typo)
-                await asyncio.sleep(random.uniform(0.1, 0.3))
+                await asyncio.sleep(base_typing_speed)
                 
                 # Correct the typo
                 element.send_keys(Keys.BACKSPACE)
-                await asyncio.sleep(random.uniform(0.1, 0.2))
+                await asyncio.sleep(base_typing_speed * 0.5)
                 element.send_keys(char)
             else:
-                # Normal typing with variable speed
-                typing_speed = random.uniform(0.1, 0.3)
-                # Slow down for shift key if uppercase
+                # Handle uppercase characters
                 if char.isupper():
                     element.send_keys(Keys.SHIFT)
-                    await asyncio.sleep(random.uniform(0.1, 0.2))
-                element.send_keys(char)
+                    await asyncio.sleep(base_typing_speed * 0.5)
+                    element.send_keys(char.lower())
+                else:
+                    element.send_keys(char)
             
             # Variable delay between keystrokes
-            await asyncio.sleep(typing_speed)
+            await asyncio.sleep(base_typing_speed)
             
             # Occasional pause while typing (2% chance)
             if random.random() < 0.02:
