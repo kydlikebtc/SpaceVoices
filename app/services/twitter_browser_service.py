@@ -39,6 +39,9 @@ class TwitterBrowserService:
         self._proxy_config: Optional[Dict[str, str]] = None
         self._session_duration: int = int(os.getenv('BROWSER_SESSION_DURATION', '3600'))  # 1 hour default
         self._session_start_time: Optional[float] = None
+        self._backoff_delay: float = 5.0  # Initial backoff delay in seconds
+        self._max_backoff_delay: float = 60.0  # Maximum backoff delay
+        self._max_retries: int = int(os.getenv('BROWSER_MAX_RETRIES', '3'))  # Max retry attempts
     
     async def _cleanup_chrome_processes(self):
         """Clean up any existing Chrome processes."""
@@ -234,7 +237,7 @@ class TwitterBrowserService:
         # Check if we need to rotate session
         if self._should_rotate_session():
             logger.info("Rotating browser session...")
-            await self.cleanup()
+            self.cleanup()  # Not async, just calls synchronous methods
         
         # Generate unique session ID
         timestamp = str(int(time.time()))
@@ -244,6 +247,9 @@ class TwitterBrowserService:
         
         # Configure proxy if enabled
         self._configure_proxy()
+        
+        # Reset backoff for fresh setup
+        self._reset_backoff()
         
         # Clean up any existing Chrome processes
         await self._cleanup_chrome_processes()
@@ -275,15 +281,18 @@ class TwitterBrowserService:
         for attempt in range(max_retries):
             try:
                 # Initialize driver with explicit service
-                self.driver = webdriver.Chrome(service=service, options=options)
+                driver = webdriver.Chrome(service=service, options=options)
                 
                 # Set page load timeout and implicit wait
-                self.driver.set_page_load_timeout(30)
-                self.driver.implicitly_wait(10)
+                driver.set_page_load_timeout(30)
+                driver.implicitly_wait(10)
                 
                 # Test browser is working
-                self.driver.get('about:blank')
+                driver.get('about:blank')
                 await asyncio.sleep(1)
+                
+                # Store driver after successful initialization
+                self.driver = driver
                 
                 # Execute CDP commands to prevent detection
                 stealth_js = """
@@ -386,8 +395,9 @@ class TwitterBrowserService:
                 await asyncio.sleep(2)
         
         # Profile settings
-        options.add_argument(f'--user-data-dir={data_dir}')
-        options.add_argument('--profile-directory=Default')
+        if self._temp_dir:
+            options.add_argument(f'--user-data-dir={self._temp_dir}')
+            options.add_argument('--profile-directory=Default')
         
         # Basic preferences
         prefs = {
@@ -802,11 +812,11 @@ class TwitterBrowserService:
             if not self.driver:
                 await self.setup_browser()
             
-            # Navigate to login page with retry
-            max_retries = 3
-            for attempt in range(max_retries):
+            # Navigate to login page with exponential backoff retry
+            self._reset_backoff()  # Reset backoff for fresh login attempt
+            for attempt in range(self._max_retries):
                 try:
-                    logger.info(f"Navigating to login page (attempt {attempt + 1})...")
+                    logger.info(f"Navigating to login page (attempt {attempt + 1}/{self._max_retries})...")
                     self.driver.get('https://twitter.com/i/flow/login')
                     
                     # Wait for page load
@@ -814,12 +824,15 @@ class TwitterBrowserService:
                         EC.presence_of_element_located((By.TAG_NAME, "body"))
                     )
                     await asyncio.sleep(2)
+                    self._reset_backoff()  # Reset on success
                     break
                 except Exception as e:
-                    if attempt == max_retries - 1:
-                        logger.error(f"Failed to load login page: {str(e)}")
+                    logger.error(f"Failed to load login page (attempt {attempt + 1}): {str(e)}")
+                    if attempt == self._max_retries - 1:
+                        logger.error("Exceeded maximum retry attempts")
                         return False
-                    await asyncio.sleep(2)
+                    logger.info(f"Retrying with backoff delay: {self._backoff_delay}s")
+                    await self._exponential_backoff()
             
             # Fill username with human-like timing
             try:
@@ -1098,6 +1111,15 @@ class TwitterBrowserService:
             raise RuntimeError("Browser driver is not initialized")
         return self.driver
         
+    async def _exponential_backoff(self) -> None:
+        """Execute exponential backoff delay."""
+        await asyncio.sleep(self._backoff_delay)
+        self._backoff_delay = min(self._backoff_delay * 2, self._max_backoff_delay)
+        
+    def _reset_backoff(self) -> None:
+        """Reset backoff delay to initial value."""
+        self._backoff_delay = 5.0
+        
     async def _type_like_human(self, element: WebElement, text: str) -> None:
         """
         Type text with human-like patterns including occasional typos and corrections.
@@ -1225,29 +1247,49 @@ class TwitterBrowserService:
                 except Exception:
                     pass
             
-            # Try navigating to home
-            logger.info("Navigating to home page to verify login...")
-            self.driver.get('https://x.com/home')
-            await asyncio.sleep(5)  # Give more time for page load
-            
-            # Check current state
-            logger.info(f"Current URL after navigation: {self.driver.current_url}")
-            logger.info(f"Current title after navigation: {self.driver.title}")
-            
-            # Check for login indicators
-            for selector in [
-                "[data-testid='AppTabBar_Home_Link']",
-                "[data-testid='SideNav_NewTweet_Button']",
-                "[data-testid='AppTabBar_Profile_Link']"
-            ]:
+            # Try navigating to home with retry
+            self._reset_backoff()
+            for attempt in range(self._max_retries):
                 try:
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                    )
-                    logger.info(f"Found login indicator: {selector}")
-                    return True
-                except TimeoutException:
-                    continue
+                    logger.info(f"Navigating to home page (attempt {attempt + 1}/{self._max_retries})...")
+                    self.driver.get('https://x.com/home')
+                    await asyncio.sleep(5)  # Give more time for page load
+                    
+                    # Check current state
+                    logger.info(f"Current URL after navigation: {self.driver.current_url}")
+                    logger.info(f"Current title after navigation: {self.driver.title}")
+                    
+                    # Check for login indicators with improved error handling
+                    login_indicators = [
+                        "[data-testid='AppTabBar_Home_Link']",
+                        "[data-testid='SideNav_NewTweet_Button']",
+                        "[data-testid='AppTabBar_Profile_Link']"
+                    ]
+                    
+                    for selector in login_indicators:
+                        try:
+                            WebDriverWait(self.driver, 10).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                            )
+                            logger.info(f"Found login indicator: {selector}")
+                            self._reset_backoff()  # Reset on success
+                            return True
+                        except TimeoutException:
+                            continue
+                    
+                    # If we get here, no indicators were found
+                    if attempt < self._max_retries - 1:
+                        logger.warning("No login indicators found, retrying...")
+                        await self._exponential_backoff()
+                    else:
+                        logger.error("Failed to find any login indicators after all retries")
+                        return False
+                        
+                except WebDriverException as e:
+                    logger.error(f"Browser error during home page navigation (attempt {attempt + 1}): {str(e)}")
+                    if attempt == self._max_retries - 1:
+                        return False
+                    await self._exponential_backoff()
             
             # If we get here, we're not logged in
             logger.error("Not logged in, attempting to re-login")
@@ -1288,18 +1330,29 @@ class TwitterBrowserService:
             logger.info(f"Current URL: {self.driver.current_url}")
             logger.info(f"Current title: {self.driver.title}")
             
-            # Click Spaces button
-            logger.info("Looking for Spaces button...")
-            try:
-                spaces_button = WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid='AppTabBar_Audio_Link']"))
-                )
-                spaces_button.click()
-                await asyncio.sleep(2)
-            except TimeoutException:
-                logger.error("Could not find Spaces button")
-                logger.error(f"Page source preview: {self.driver.page_source[:1000]}")
-                return None
+            # Click Spaces button with retry
+            self._reset_backoff()
+            for attempt in range(self._max_retries):
+                try:
+                    logger.info(f"Looking for Spaces button (attempt {attempt + 1}/{self._max_retries})...")
+                    spaces_button = WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid='AppTabBar_Audio_Link']"))
+                    )
+                    spaces_button.click()
+                    await asyncio.sleep(2)
+                    self._reset_backoff()  # Reset on success
+                    break
+                except TimeoutException as e:
+                    logger.error(f"Could not find Spaces button (attempt {attempt + 1}): {str(e)}")
+                    if attempt == self._max_retries - 1:
+                        logger.error("Exceeded maximum retry attempts")
+                        logger.error(f"Page source preview: {self.driver.page_source[:1000]}")
+                        return None
+                    logger.info(f"Retrying with backoff delay: {self._backoff_delay}s")
+                    await self._exponential_backoff()
+                except Exception as e:
+                    logger.error(f"Unexpected error clicking Spaces button: {str(e)}")
+                    return None
             
             # Click Create Space button
             logger.info("Looking for Create Space button...")
