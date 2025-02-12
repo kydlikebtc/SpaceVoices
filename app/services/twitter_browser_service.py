@@ -14,9 +14,12 @@ from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.common.exceptions import TimeoutException, WebDriverException, NoSuchWindowException
+import math
 from webdriver_manager.chrome import ChromeDriverManager
 from app.services.feature_flags import FeatureFlags
 
@@ -826,9 +829,7 @@ class TwitterBrowserService:
                 )
                 logger.info("Found username input, typing...")
                 username_input.clear()
-                for char in username:
-                    username_input.send_keys(char)
-                    await asyncio.sleep(random.uniform(0.1, 0.3))
+                await self._type_like_human(username_input, username)
                 
                 # Click next with JavaScript
                 logger.info("Looking for next button...")
@@ -837,22 +838,76 @@ class TwitterBrowserService:
                 )
                 logger.info("Found next button, clicking...")
                 
-                # Move mouse to button with random offset
+                # Simulate natural mouse movement with acceleration/deceleration
                 button_size = next_button.size
-                offset_x = random.randint(5, button_size['width'] - 5)
-                offset_y = random.randint(5, button_size['height'] - 5)
+                button_location = next_button.location
                 
+                # Calculate start and end positions
+                start_x = random.randint(0, button_location['x'])
+                start_y = random.randint(0, button_location['y'])
+                end_x = button_location['x'] + random.randint(5, button_size['width'] - 5)
+                end_y = button_location['y'] + random.randint(5, button_size['height'] - 5)
+                
+                # Generate smooth movement path with acceleration
+                steps = random.randint(5, 10)
+                for i in range(steps):
+                    # Use easing function for smooth acceleration/deceleration
+                    progress = i / (steps - 1)
+                    ease = 0.5 - math.cos(progress * math.pi) / 2
+                    
+                    current_x = start_x + (end_x - start_x) * ease
+                    current_y = start_y + (end_y - start_y) * ease
+                    
+                    # Add slight random deviation for more natural movement
+                    current_x += random.uniform(-2, 2)
+                    current_y += random.uniform(-2, 2)
+                    
+                    # Dispatch mousemove event
+                    self.driver.execute_script(f"""
+                        document.dispatchEvent(new MouseEvent('mousemove', {{
+                            bubbles: true,
+                            cancelable: true,
+                            view: window,
+                            clientX: {current_x},
+                            clientY: {current_y}
+                        }}));
+                    """)
+                    await asyncio.sleep(random.uniform(0.01, 0.03))
+                
+                # Hover over button
                 self.driver.execute_script(f"""
                     arguments[0].dispatchEvent(new MouseEvent('mouseover', {{
-                        'view': window,
-                        'bubbles': true,
-                        'cancelable': true,
-                        'clientX': arguments[1],
-                        'clientY': arguments[2]
+                        view: window,
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: {end_x},
+                        clientY: {end_y}
                     }}));
-                """, next_button, offset_x, offset_y)
+                """, next_button)
+                
+                # Random pause before click
                 await asyncio.sleep(random.uniform(0.2, 0.5))
-                self.driver.execute_script("arguments[0].click();", next_button)
+                
+                # Click with slight position variation
+                click_x = end_x + random.uniform(-1, 1)
+                click_y = end_y + random.uniform(-1, 1)
+                self.driver.execute_script(f"""
+                    arguments[0].dispatchEvent(new MouseEvent('mousedown', {{
+                        view: window,
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: {click_x},
+                        clientY: {click_y}
+                    }}));
+                    arguments[0].dispatchEvent(new MouseEvent('mouseup', {{
+                        view: window,
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: {click_x},
+                        clientY: {click_y}
+                    }}));
+                    arguments[0].click();
+                """, next_button)
                 await asyncio.sleep(2)
             except TimeoutException:
                 logger.error("Timeout waiting for username input or next button")
@@ -871,11 +926,7 @@ class TwitterBrowserService:
                 )
                 logger.info("Found password input, typing...")
                 password_input.clear()
-                
-                # Add random delays between keystrokes
-                for char in password:
-                    password_input.send_keys(char)
-                    await asyncio.sleep(random.uniform(0.1, 0.4))
+                await self._type_like_human(password_input, password)
                 
                 # Random pause after password entry
                 await asyncio.sleep(random.uniform(0.5, 1.0))
@@ -1046,6 +1097,51 @@ class TwitterBrowserService:
         if self.driver is None:
             raise RuntimeError("Browser driver is not initialized")
         return self.driver
+        
+    async def _type_like_human(self, element: WebElement, text: str) -> None:
+        """
+        Type text with human-like patterns including occasional typos and corrections.
+        
+        Args:
+            element: WebDriver element to type into
+            text: Text to type
+        """
+        nearby_keys = {
+            'a': ['s', 'q', 'z'], 's': ['a', 'd', 'w'], 'd': ['s', 'f', 'e'],
+            'f': ['d', 'g', 'r'], 'g': ['f', 'h', 't'], 'h': ['g', 'j', 'y'],
+            'j': ['h', 'k', 'u'], 'k': ['j', 'l', 'i'], 'l': ['k', ';', 'o'],
+            'q': ['w', 'a', '1'], 'w': ['q', 'e', 's'], 'e': ['w', 'r', 'd'],
+            'r': ['e', 't', 'f'], 't': ['r', 'y', 'g'], 'y': ['t', 'u', 'h'],
+            'u': ['y', 'i', 'j'], 'i': ['u', 'o', 'k'], 'o': ['i', 'p', 'l'],
+            'p': ['o', '[', ';'], '@': ['2', '#', '!'], '.': [',', '/', ';']
+        }
+        
+        for char in text:
+            # Occasional typo (5% chance)
+            if char.lower() in nearby_keys and random.random() < 0.05:
+                typo = random.choice(nearby_keys[char.lower()])
+                element.send_keys(typo)
+                await asyncio.sleep(random.uniform(0.1, 0.3))
+                
+                # Correct the typo
+                element.send_keys(Keys.BACKSPACE)
+                await asyncio.sleep(random.uniform(0.1, 0.2))
+                element.send_keys(char)
+            else:
+                # Normal typing with variable speed
+                typing_speed = random.uniform(0.1, 0.3)
+                # Slow down for shift key if uppercase
+                if char.isupper():
+                    element.send_keys(Keys.SHIFT)
+                    await asyncio.sleep(random.uniform(0.1, 0.2))
+                element.send_keys(char)
+            
+            # Variable delay between keystrokes
+            await asyncio.sleep(typing_speed)
+            
+            # Occasional pause while typing (2% chance)
+            if random.random() < 0.02:
+                await asyncio.sleep(random.uniform(0.5, 1.0))
         
     async def _handle_captcha(self, timeout: int = 300) -> bool:
         """
@@ -1226,8 +1322,8 @@ class TwitterBrowserService:
                 EC.presence_of_element_located((By.XPATH, "//input[@placeholder='What do you want to talk about?']"))
             )
             title_input.clear()
-            title_input.send_keys(title)
-            await asyncio.sleep(1)
+            await self._type_like_human(title_input, title)
+            await asyncio.sleep(random.uniform(0.5, 1.0))
             
             # Start Space
             logger.info("Looking for Start Space button...")
