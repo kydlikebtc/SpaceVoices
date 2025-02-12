@@ -37,14 +37,11 @@ class TwitterBrowserService:
         self._session_id: str = ""  # Empty string as default
         self._debug_port: Optional[int] = None
         self._proxy_config: Optional[Dict[str, str]] = None
-        self._backoff_delay: float = 5.0
-        self._max_backoff_delay: float = 60.0
-        self._max_retries: int = 3
-        self._session_duration: int = int(os.getenv('BROWSER_SESSION_DURATION', '3600'))  # 1 hour default
-        self._session_start_time: Optional[float] = None
         self._backoff_delay: float = 5.0  # Initial backoff delay in seconds
         self._max_backoff_delay: float = 60.0  # Maximum backoff delay
         self._max_retries: int = int(os.getenv('BROWSER_MAX_RETRIES', '3'))  # Max retry attempts
+        self._session_duration: int = int(os.getenv('BROWSER_SESSION_DURATION', '3600'))  # 1 hour default
+        self._session_start_time: Optional[float] = None
     
     async def _cleanup_chrome_processes(self):
         """Clean up any existing Chrome processes."""
