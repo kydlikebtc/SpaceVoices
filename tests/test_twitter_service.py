@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import Mock, AsyncMock
 import tweepy
-from app.services.twitter_service import TwitterSpacesService
+from app.services.twitter_service import TwitterSpacesService, TwitterSpacesError
 from app.services.twitter_account_manager import TwitterAccountManager
 from app.services.spaces_interaction import SpacesInteractionService
 
