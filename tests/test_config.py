@@ -21,10 +21,17 @@ def test_init_with_key():
 
 def test_pad_key():
     """Test key padding functionality."""
+    # Test with short key (should fail)
     short_key = "short-key"
     padded = ConfigService._pad_key(short_key)
-    assert len(padded) >= 32  # Base64 encoding will make it longer
+    assert padded is None
+    
+    # Test with proper length key
+    long_key = "a" * 32
+    padded = ConfigService._pad_key(long_key)
+    assert padded is not None
     assert isinstance(padded, bytes)
+    assert len(padded) >= 32  # Base64 encoding will make it longer
 
 def test_get_encrypted_without_encryption(config_service):
     """Test getting value without encryption."""
