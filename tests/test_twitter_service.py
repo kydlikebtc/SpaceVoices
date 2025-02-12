@@ -6,15 +6,33 @@ from app.services.twitter_account_manager import TwitterAccountManager
 from app.services.spaces_interaction import SpacesInteractionService
 
 @pytest.fixture
-def mock_account_manager(monkeypatch):
+def mock_account_manager():
     manager = Mock(spec=TwitterAccountManager)
-    manager.get_client.return_value = Mock(spec=tweepy.Client)
+    
+    # Set up mock client for valid characters
+    mock_client = Mock(spec=tweepy.Client)
+    mock_space = Mock()
+    mock_space.data = {"id": "test_space_123"}
+    mock_client.create_space.return_value = mock_space
+    
+    def get_client(character):
+        if character in ["Host", "Alice"]:
+            return mock_client
+        return None
+    
+    manager.get_client.side_effect = get_client
     return manager
 
 @pytest.fixture
-def spaces_service(mock_account_manager):
+def spaces_service(monkeypatch, mock_account_manager):
+    # Mock the TwitterAccountManager class to return our mock instance
+    def mock_init(self):
+        self.accounts = {}
+    monkeypatch.setattr(TwitterAccountManager, "__init__", mock_init)
+    monkeypatch.setattr(TwitterAccountManager, "get_client", mock_account_manager.get_client)
+    
+    # Create service with mocked dependencies
     service = TwitterSpacesService()
-    service.account_manager = mock_account_manager
     return service
 
 @pytest.mark.asyncio
