@@ -333,10 +333,10 @@ class TwitterBrowserService:
                     };
                 """
                 
-                if isinstance(self.driver, webdriver.Chrome):
-                    self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                        "source": stealth_js
-                    })
+                driver = self._get_driver()
+                driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                    "source": stealth_js
+                })
                 
                 # Success
                 logger.info("Successfully initialized Chrome browser")
@@ -772,10 +772,12 @@ class TwitterBrowserService:
             for attempt in range(self._max_retries):
                 try:
                     logger.info(f"Navigating to login page (attempt {attempt + 1}/{self._max_retries})...")
-                    self.driver.get('https://twitter.com/i/flow/login')
+                    driver = self._get_driver()
+                    driver.get('https://twitter.com/i/flow/login')
                     
                     # Wait for page load
-                    WebDriverWait(self.driver, 10).until(
+                    driver = self._get_driver()
+                    WebDriverWait(driver, 10).until(
                         EC.presence_of_element_located((By.TAG_NAME, "body"))
                     )
                     await asyncio.sleep(2)
@@ -831,7 +833,8 @@ class TwitterBrowserService:
                     current_y += random.uniform(-2, 2)
                     
                     # Dispatch mousemove event
-                    self.driver.execute_script(f"""
+                    driver = self._get_driver()
+                    driver.execute_script(f"""
                         document.dispatchEvent(new MouseEvent('mousemove', {{
                             bubbles: true,
                             cancelable: true,
@@ -843,7 +846,8 @@ class TwitterBrowserService:
                     await asyncio.sleep(random.uniform(0.01, 0.03))
                 
                 # Hover over button
-                self.driver.execute_script(f"""
+                driver = self._get_driver()
+                driver.execute_script(f"""
                     arguments[0].dispatchEvent(new MouseEvent('mouseover', {{
                         view: window,
                         bubbles: true,
@@ -859,7 +863,8 @@ class TwitterBrowserService:
                 # Click with slight position variation
                 click_x = end_x + random.uniform(-1, 1)
                 click_y = end_y + random.uniform(-1, 1)
-                self.driver.execute_script(f"""
+                driver = self._get_driver()
+                driver.execute_script(f"""
                     arguments[0].dispatchEvent(new MouseEvent('mousedown', {{
                         view: window,
                         bubbles: true,
@@ -879,8 +884,9 @@ class TwitterBrowserService:
                 await asyncio.sleep(2)
             except TimeoutException:
                 logger.error("Timeout waiting for username input or next button")
-                logger.error(f"Current URL: {self.driver.current_url}")
-                logger.error(f"Page source: {self.driver.page_source[:1000]}")
+                driver = self._get_driver()
+                logger.error(f"Current URL: {driver.current_url}")
+                logger.error(f"Page source: {driver.page_source[:1000]}")
                 return False
             except Exception as e:
                 logger.error(f"Error during username entry: {str(e)}")
@@ -915,7 +921,8 @@ class TwitterBrowserService:
                 click_y = button_location['y'] + random.randint(5, button_size['height'] - 5)
                 
                 # Simulate realistic mouse movement and click
-                self.driver.execute_script(f"""
+                driver = self._get_driver()
+                driver.execute_script(f"""
                     // Create mousemove event
                     const moveEvent = new MouseEvent('mousemove', {{
                         bubbles: true,
@@ -943,7 +950,8 @@ class TwitterBrowserService:
                 await asyncio.sleep(random.uniform(0.3, 0.7))
                 
                 # Click the button
-                self.driver.execute_script("arguments[0].click();", login_button)
+                driver = self._get_driver()
+                driver.execute_script("arguments[0].click();", login_button)
                 
                 # Random pause after click
                 await asyncio.sleep(random.uniform(2.0, 4.0))
@@ -1057,7 +1065,8 @@ class TwitterBrowserService:
             logger.error(f"Login failed: {str(e)}")
             if hasattr(self, 'driver') and self.driver:
                 logger.error(f"Current URL: {self.driver.current_url}")
-                logger.error(f"Current title: {self.driver.title}")
+                driver = self._get_driver()
+                logger.error(f"Current title: {driver.title}")
             return False
     
     def _get_driver(self) -> webdriver.Chrome:
@@ -1223,7 +1232,8 @@ class TwitterBrowserService:
                     
                     for selector in login_indicators:
                         try:
-                            WebDriverWait(self.driver, 10).until(
+                            driver = self._get_driver()
+                    WebDriverWait(driver, 10).until(
                                 EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                             )
                             logger.info(f"Found login indicator: {selector}")
@@ -1262,7 +1272,8 @@ class TwitterBrowserService:
             logger.error(f"Error checking login state: {str(e)}")
             if hasattr(self, 'driver') and self.driver:
                 logger.error(f"Current URL: {self.driver.current_url}")
-                logger.error(f"Current title: {self.driver.title}")
+                driver = self._get_driver()
+                logger.error(f"Current title: {driver.title}")
             return False
 
     async def create_space(self, title: str) -> Optional[str]:
@@ -1361,7 +1372,8 @@ class TwitterBrowserService:
             except TimeoutException:
                 logger.error("Could not verify Space creation")
                 logger.error(f"Current URL: {self.driver.current_url}")
-                logger.error(f"Current title: {self.driver.title}")
+                driver = self._get_driver()
+                logger.error(f"Current title: {driver.title}")
                 logger.error(f"Page source preview: {self.driver.page_source[:1000]}")
                 return None
             
@@ -1369,7 +1381,8 @@ class TwitterBrowserService:
             logger.error(f"Failed to create Space: {str(e)}")
             if hasattr(self, 'driver') and self.driver:
                 logger.error(f"Current URL: {self.driver.current_url}")
-                logger.error(f"Current title: {self.driver.title}")
+                driver = self._get_driver()
+                logger.error(f"Current title: {driver.title}")
             return None
     
     async def end_space(self, space_id: str) -> bool:
