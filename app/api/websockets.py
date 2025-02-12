@@ -1,7 +1,11 @@
 from fastapi import WebSocket, WebSocketDisconnect
 from typing import Dict
+import asyncio
+import logging
 from app.models.space_event import SpaceEvent
 from app.services.twitter_service import TwitterSpacesService, TwitterSpacesError
+
+logger = logging.getLogger(__name__)
 
 class SpaceEventManager:
     """Manager for Space event WebSocket connections."""
@@ -12,8 +16,14 @@ class SpaceEventManager:
     
     async def connect(self, space_id: str, websocket: WebSocket):
         """Connect a new WebSocket client."""
-        await websocket.accept()
-        self.active_connections[space_id] = websocket
+        try:
+            await websocket.accept()
+            self.active_connections[space_id] = websocket
+            await self._start_heartbeat(space_id)
+        except Exception as e:
+            logger.error(f"Connection error: {str(e)}")
+            self.disconnect(space_id)
+            raise
     
     def disconnect(self, space_id: str):
         """Disconnect a WebSocket client."""
@@ -26,7 +36,43 @@ class SpaceEventManager:
             try:
                 await self.active_connections[space_id].send_json(event.model_dump())
             except Exception as e:
+                logger.error(f"Failed to broadcast event: {str(e)}")
                 self.disconnect(space_id)
+                await self._attempt_reconnect(space_id)
+                
+    async def _start_heartbeat(self, space_id: str):
+        """Start heartbeat for connection health monitoring."""
+        while True:
+            try:
+                if space_id in self.active_connections:
+                    await self.active_connections[space_id].send_json({"type": "ping"})
+                await asyncio.sleep(30)
+            except Exception as e:
+                logger.error(f"Heartbeat failed: {str(e)}")
+                self.disconnect(space_id)
+                await self._attempt_reconnect(space_id)
+                break
+                
+    async def _attempt_reconnect(self, space_id: str, max_attempts: int = 3):
+        """Attempt to reconnect a disconnected client."""
+        attempts = 0
+        while attempts < max_attempts:
+            try:
+                if space_id in self.active_connections:
+                    return  # Already reconnected
+                    
+                logger.info(f"Attempting reconnection for {space_id}, attempt {attempts + 1}/{max_attempts}")
+                await asyncio.sleep(min(2 ** attempts, 30))  # Exponential backoff
+                
+                # Attempt reconnection logic here
+                # This would typically involve the client initiating a new connection
+                
+                attempts += 1
+            except Exception as e:
+                logger.error(f"Reconnection attempt failed: {str(e)}")
+                if attempts == max_attempts - 1:
+                    logger.error(f"Max reconnection attempts reached for {space_id}")
+                    break
 
 # Global event manager instance
 event_manager = SpaceEventManager()
