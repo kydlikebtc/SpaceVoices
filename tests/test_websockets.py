@@ -58,11 +58,13 @@ async def test_handle_space_events(mock_websocket, monkeypatch):
     
     mock_service.interaction_services = {"Host": mock_interaction}
     
-    def mock_init(self):
-        self.account_manager = Mock()
-        self.interaction_services = {"Host": mock_interaction}
-        return self
-    monkeypatch.setattr(TwitterSpacesService, "__init__", mock_init)
+    # Create a mock class
+    class MockTwitterService:
+        def __init__(self):
+            self.account_manager = Mock()
+            self.interaction_services = {"Host": mock_interaction}
+    
+    monkeypatch.setattr("app.api.websockets.TwitterSpacesService", MockTwitterService)
     
     # Test successful connection
     space_id = "test_space_123"
