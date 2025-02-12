@@ -1,8 +1,10 @@
 from typing import Dict, Any, Optional
 import os
 import logging
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from base64 import b64encode
+
+logger = logging.getLogger(__name__)
 
 logger = logging.getLogger(__name__)
 
@@ -33,18 +35,23 @@ class ConfigService:
             self.fernet = None
     
     @staticmethod
-    def _pad_key(key: str) -> bytes:
+    def _pad_key(key: str) -> Optional[bytes]:
         """Ensure key is properly base64-encoded and padded."""
-        # Convert to bytes if string
-        if isinstance(key, str):
-            key = key.encode()
-        
-        # Ensure key is proper length for Fernet (32 bytes)
-        if len(key) < 32:
-            key = key.ljust(32, b'=')
-        
-        # Ensure proper base64 encoding
-        return b64encode(key[:32])
+        try:
+            # Convert to bytes if string
+            if isinstance(key, str):
+                key = key.encode()
+            
+            # Key must be at least 32 bytes for security
+            if len(key) < 32:
+                logger.warning("Encryption key too short")
+                return None
+            
+            # Ensure proper base64 encoding
+            return b64encode(key[:32])
+        except Exception as e:
+            logger.error(f"Invalid encryption key format: {str(e)}")
+            return None
     
     def get_encrypted(self, key: str) -> Optional[str]:
         """
