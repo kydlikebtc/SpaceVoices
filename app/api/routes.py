@@ -1,16 +1,26 @@
-from fastapi import APIRouter, HTTPException, BackgroundTasks
+from fastapi import APIRouter, HTTPException, BackgroundTasks, WebSocket
 from typing import Dict
 from app.models.script import Script
 from app.services.script_parser import ScriptParser
 from app.services.voice_generator import ElevenLabsGenerator, VoiceGenerationError
 from app.services.audio_processor import AudioProcessor, AudioProcessingError
 from app.services.twitter_service import TwitterSpacesService, TwitterSpacesError
+from app.api.websockets import handle_space_events
 
 router = APIRouter()
 
 # In-memory storage for demo purposes
 scripts_db = {}
 podcasts_db = {}
+
+@router.websocket("/spaces/{space_id}/events")
+async def space_events(
+    space_id: str,
+    websocket: WebSocket,
+    character: str = "Host"
+):
+    """WebSocket endpoint for real-time Space events."""
+    await handle_space_events(space_id, websocket, character)
 
 @router.post("/scripts", response_model=Dict[str, int])
 async def create_script(script: Script):
