@@ -1,4 +1,4 @@
-from typing import Optional, Dict, cast, NoReturn
+from typing import Optional, Dict, cast, NoReturn, Any, List
 import logging
 import time
 import asyncio
@@ -8,7 +8,9 @@ import shutil
 import random
 import json
 import tempfile
+import aiohttp
 from pathlib import Path
+from cryptography.fernet import Fernet
 from selenium import webdriver
 from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.chrome.service import Service
@@ -42,29 +44,33 @@ class TwitterBrowserService:
         self._max_retries: int = int(os.getenv('BROWSER_MAX_RETRIES', '3'))  # Max retry attempts
         self._session_duration: int = int(os.getenv('BROWSER_SESSION_DURATION', '3600'))  # 1 hour default
         self._session_start_time: Optional[float] = None
+        self._cookies_dir: str = os.path.expanduser(os.getenv('BROWSER_COOKIE_DIR', '~/.twitter_cookies'))
+        self._cookies_file: str = os.path.join(self._cookies_dir, 'cookies.enc')
+        self._cookie_encryption_key: str = os.getenv('BROWSER_COOKIE_ENCRYPTION_KEY', '')
     
     async def _cleanup_chrome_processes(self):
         """Clean up any existing Chrome processes."""
         try:
             # Kill Chrome processes
-            for proc in psutil.process_iter(['pid', 'name']):
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
-                    if any(x in proc.info['name'].lower() for x in ['chrome', 'chromium']):
-                        proc.kill()
+                    proc_name = proc.info['name'].lower()
+                    if any(x in proc_name for x in ['chrome', 'chromium']):
+                        # Get command line to check if it's our Chrome instance
+                        cmdline = ' '.join(proc.info['cmdline'] or [])
+                        if self._temp_dir and self._temp_dir in cmdline:
+                            proc.kill()
+                            logger.info(f"Killed Chrome process {proc.pid}")
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
             
             # Clean up temporary directories
-            temp_dirs = ['/tmp/chrome*', '/dev/shm/chrome*']
-            for pattern in temp_dirs:
+            if self._temp_dir and os.path.exists(self._temp_dir):
                 try:
-                    for path in Path(os.path.dirname(pattern)).glob(os.path.basename(pattern)):
-                        if path.is_dir():
-                            shutil.rmtree(str(path), ignore_errors=True)
-                        else:
-                            path.unlink(missing_ok=True)
+                    shutil.rmtree(self._temp_dir, ignore_errors=True)
+                    logger.info(f"Cleaned up temporary directory: {self._temp_dir}")
                 except Exception as e:
-                    logger.warning(f"Failed to clean up {pattern}: {e}")
+                    logger.warning(f"Failed to clean up {self._temp_dir}: {e}")
             
             await asyncio.sleep(2)
         except Exception as e:
@@ -130,7 +136,8 @@ class TwitterBrowserService:
         
         # Core settings with improved stability
         options.add_argument('--no-sandbox')
-        options.add_argument('--headless=new')
+        # Disable headless mode for verification testing
+        # options.add_argument('--headless=new')
         options.add_argument('--disable-gpu')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-crash-reporter')
@@ -145,7 +152,6 @@ class TwitterBrowserService:
         options.add_argument(f'--force-device-scale-factor={scale_factor}')
         
         # Profile and data directory with enhanced privacy
-        options.add_argument(f'--user-data-dir={self._temp_dir}')
         options.add_argument('--disable-sync')
         options.add_argument('--disable-encryption')
         options.add_argument('--disable-features=UserAgentClientHint')
@@ -212,7 +218,25 @@ class TwitterBrowserService:
             return True
         return time.time() - self._session_start_time >= self._session_duration
 
-    def _configure_proxy(self) -> None:
+    async def _check_proxy_health(self) -> bool:
+        """Check if proxy is responsive."""
+        try:
+            if not self._proxy_config:
+                return False
+                
+            proxy_url = f"http://{self._proxy_config['host']}:{self._proxy_config['port']}"
+            if self._proxy_config.get('username') and self._proxy_config.get('password'):
+                proxy_url = f"http://{self._proxy_config['username']}:{self._proxy_config['password']}@{self._proxy_config['host']}:{self._proxy_config['port']}"
+                
+            timeout = int(os.getenv('BROWSER_PROXY_HEALTH_CHECK_TIMEOUT', '10'))
+            async with aiohttp.ClientSession() as session:
+                async with session.get('https://twitter.com', proxy=proxy_url, timeout=timeout) as response:
+                    return response.status == 200
+        except Exception as e:
+            logger.error(f"Proxy health check failed: {e}")
+            return False
+
+    async def _configure_proxy(self) -> None:
         """Configure proxy settings if enabled."""
         if os.getenv('BROWSER_USE_PROXY', 'false').lower() == 'true':
             self._proxy_config = {
@@ -221,6 +245,10 @@ class TwitterBrowserService:
                 'username': os.getenv('BROWSER_PROXY_USERNAME', ''),
                 'password': os.getenv('BROWSER_PROXY_PASSWORD', '')
             }
+            
+            if not await self._check_proxy_health():
+                logger.warning("Proxy health check failed, disabling proxy")
+                self._proxy_config = None
             
             if all(self._proxy_config.values()):
                 logger.info("Proxy configuration loaded")
@@ -246,7 +274,7 @@ class TwitterBrowserService:
         self._session_id = f"{timestamp}_{pid}_{rand_suffix}"
         
         # Configure proxy if enabled
-        self._configure_proxy()
+        await self._configure_proxy()
         
         # Reset backoff for fresh setup
         self._reset_backoff()
@@ -761,7 +789,35 @@ class TwitterBrowserService:
             raise
     
     async def login(self, username: str, password: str) -> bool:
-        """Log into Twitter using browser automation."""
+        """Login to Twitter with cookie support."""
+        try:
+            if not self.driver:
+                await self.setup_browser()
+            
+            # Try using existing cookies first
+            self._load_cookies()
+            if self.driver and self._validate_cookies(self.driver.get_cookies()):
+                logger.info("Using existing cookies for authentication")
+                await self.driver.get('https://twitter.com/home')
+                if await self._ensure_logged_in():
+                    logger.info("Successfully authenticated using cookies")
+                    return True
+                logger.info("Cookie authentication failed, falling back to credentials")
+            
+            # Perform fresh login if cookies are invalid or missing
+            logger.info("Performing fresh login with credentials")
+            success = await self._perform_login(username, password)
+            if success:
+                self._save_cookies()
+                logger.info("Successfully saved new cookies after login")
+            return success
+        except Exception as e:
+            logger.error(f"Login failed: {e}")
+            return False
+
+
+    async def _perform_login(self, username: str, password: str) -> bool:
+        """Perform fresh login with credentials."""
         logger.info("Starting login process for user %s", username.split('@')[0])
         try:
             if not self.driver:
@@ -1455,6 +1511,143 @@ class TwitterBrowserService:
             logger.error(f"Failed to end Space: {str(e)}")
             return False
     
+    def _validate_cookies(self, cookies: List[Dict[str, Any]]) -> bool:
+        """Validate cookie freshness and required fields."""
+        try:
+            required_cookies = {'auth_token', 'ct0'}
+            cookie_names = {c.get('name') for c in cookies}
+            
+            # Check required cookies exist
+            if not required_cookies.issubset(cookie_names):
+                missing = required_cookies - cookie_names
+                logger.warning(f"Missing required cookies: {missing}")
+                return False
+                
+            # Check expiration and required fields
+            for cookie in cookies:
+                if cookie.get('name') in required_cookies:
+                    # Check expiration if present
+                    expiry = cookie.get('expiry')
+                    if expiry and float(expiry) < time.time():
+                        logger.warning(f"Cookie {cookie.get('name')} has expired")
+                        return False
+                    
+                    # Check value is present and non-empty
+                    value = cookie.get('value')
+                    if not value or not value.strip():
+                        logger.warning(f"Cookie {cookie.get('name')} has no value")
+                        return False
+                    
+                    # Check domain is twitter.com or .twitter.com
+                    domain = cookie.get('domain', '')
+                    if not domain.endswith('twitter.com'):
+                        logger.warning(f"Cookie {cookie.get('name')} has invalid domain: {domain}")
+                        return False
+                    
+                    # Check secure flag for auth cookies
+                    if not cookie.get('secure', False):
+                        logger.warning(f"Cookie {cookie.get('name')} is not secure")
+                        return False
+                    
+                    # Check httpOnly flag for auth cookies
+                    if not cookie.get('httpOnly', False):
+                        logger.warning(f"Cookie {cookie.get('name')} is not httpOnly")
+                        return False
+            
+            logger.info("Cookie validation successful")
+            return True
+        except Exception as e:
+            logger.error(f"Cookie validation failed: {e}")
+            return False
+
+    async def _refresh_cookies(self) -> bool:
+        """Refresh cookies if they're expired or invalid."""
+        try:
+            if not self.driver:
+                logger.error("Browser driver not initialized")
+                return False
+                
+            # Try refreshing session with exponential backoff
+            self._reset_backoff()
+            for attempt in range(self._max_retries):
+                try:
+                    logger.info(f"Attempting cookie refresh (attempt {attempt + 1}/{self._max_retries})")
+                    await self.driver.get('https://twitter.com/home')
+                    await asyncio.sleep(2)  # Wait for any redirects
+                    
+                    # Check if we're still logged in
+                    if await self._ensure_logged_in():
+                        cookies = self.driver.get_cookies()
+                        if self._validate_cookies(cookies):
+                            self._save_cookies()
+                            logger.info("Successfully refreshed cookies")
+                            return True
+                    
+                    if attempt < self._max_retries - 1:
+                        logger.warning(f"Cookie refresh attempt {attempt + 1} failed, retrying...")
+                        await self._exponential_backoff()
+                    
+                except Exception as e:
+                    logger.error(f"Error during cookie refresh attempt {attempt + 1}: {e}")
+                    if attempt < self._max_retries - 1:
+                        await self._exponential_backoff()
+                    
+            logger.error("Cookie refresh failed after all attempts")
+            return False
+            
+        except Exception as e:
+            logger.error(f"Cookie refresh failed: {e}")
+            return False
+
+    def _encrypt_cookies(self, data: str) -> bytes:
+        """Encrypt cookie data."""
+        key = os.getenv('BROWSER_COOKIE_ENCRYPTION_KEY', '').encode()
+        if not key:
+            raise ValueError("BROWSER_COOKIE_ENCRYPTION_KEY environment variable not set")
+        f = Fernet(key)
+        return f.encrypt(data.encode())
+
+    def _decrypt_cookies(self, data: bytes) -> str:
+        """Decrypt cookie data."""
+        key = os.getenv('BROWSER_COOKIE_ENCRYPTION_KEY', '').encode()
+        if not key:
+            raise ValueError("BROWSER_COOKIE_ENCRYPTION_KEY environment variable not set")
+        f = Fernet(key)
+        return f.decrypt(data).decode()
+
+
+    def _load_cookies(self) -> None:
+        """Load cookies from file if available."""
+        try:
+            os.makedirs(self._cookies_dir, mode=0o700, exist_ok=True)
+            if os.path.exists(self._cookies_file):
+                with open(self._cookies_file, 'rb') as f:
+                    encrypted_data = f.read()
+                    cookies = json.loads(self._decrypt_cookies(encrypted_data))
+                if self.driver:
+                    for cookie in cookies:
+                        try:
+                            self.driver.add_cookie(cookie)
+                        except Exception as e:
+                            logger.warning(f"Failed to load cookie: {e}")
+                    logger.info("Loaded cookies from file")
+        except Exception as e:
+            logger.error(f"Error loading cookies: {e}")
+
+    def _save_cookies(self) -> None:
+        """Save current cookies to file."""
+        try:
+            if self.driver:
+                cookies = self.driver.get_cookies()
+                encrypted_data = self._encrypt_cookies(json.dumps(cookies))
+                os.makedirs(self._cookies_dir, mode=0o700, exist_ok=True)
+                with open(self._cookies_file, 'wb') as f:
+                    f.write(encrypted_data)
+                logger.info("Saved cookies to file")
+        except Exception as e:
+            logger.error(f"Error saving cookies: {e}")
+
+
     def cleanup(self) -> None:
         """Clean up browser resources."""
         # Clean up browser resources
