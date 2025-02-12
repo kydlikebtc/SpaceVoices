@@ -20,7 +20,7 @@ def test_create_script_invalid_character(client, sample_script):
     assert "must reference existing characters" in response.json()["detail"]
 
 @pytest.mark.asyncio
-async def test_generate_podcast(client, sample_script, mock_voice_generator):
+async def test_generate_podcast(client, sample_script, mock_voice_generator, mock_audio_processor):
     # First create a script
     response = client.post("/api/v1/scripts", json=sample_script)
     script_id = response.json()["script_id"]
@@ -31,7 +31,7 @@ async def test_generate_podcast(client, sample_script, mock_voice_generator):
     assert "podcast_id" in response.json()
 
 @pytest.mark.asyncio
-async def test_publish_to_spaces(client, sample_script, mock_voice_generator, mock_twitter_service):
+async def test_publish_to_spaces(client, sample_script, mock_voice_generator, mock_audio_processor, mock_twitter_service):
     # Create script and generate podcast first
     response = client.post("/api/v1/scripts", json=sample_script)
     script_id = response.json()["script_id"]

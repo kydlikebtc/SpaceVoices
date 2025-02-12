@@ -46,9 +46,29 @@ def mock_voice_generator(monkeypatch):
     def mock_init(self):
         pass
     
+    mock_gen = MockVoiceGenerator()
     monkeypatch.setattr(ElevenLabsGenerator, "__init__", mock_init)
-    monkeypatch.setattr(ElevenLabsGenerator, "generate_voice", MockVoiceGenerator().generate_voice)
-    return MockVoiceGenerator()
+    monkeypatch.setattr(ElevenLabsGenerator, "generate_voice", mock_gen.generate_voice)
+    return mock_gen
+
+@pytest.fixture
+def mock_audio_processor(monkeypatch):
+    class MockAudioProcessor:
+        async def merge_audio_tracks(self, voice_tracks, background_music=None):
+            import tempfile
+            temp = tempfile.TemporaryFile()
+            temp.write(b"mock merged audio data")
+            temp.seek(0)
+            return temp
+        
+        def __init__(self):
+            pass
+    
+    from app.services.audio_processor import AudioProcessor
+    mock_processor = MockAudioProcessor()
+    monkeypatch.setattr(AudioProcessor, "__init__", MockAudioProcessor.__init__)
+    monkeypatch.setattr(AudioProcessor, "merge_audio_tracks", mock_processor.merge_audio_tracks)
+    return mock_processor
 
 @pytest.fixture
 def mock_twitter_service(monkeypatch):
