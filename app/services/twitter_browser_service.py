@@ -32,7 +32,10 @@ class TwitterBrowserService:
         """Initialize the browser service."""
         self.feature_flags = FeatureFlags()
         self.driver: Optional[webdriver.Chrome] = None
-        self.credentials: Dict[str, str] = {}
+        self.credentials: Dict[str, str] = {
+            'username': os.getenv('TWITTER_USERNAME', ''),
+            'password': os.getenv('TWITTER_PASSWORD', '')
+        }
         self._temp_dir: str = ""  # Empty string as default, will be set in _create_temp_directory
         self._session_id: str = ""  # Empty string as default
         self._debug_port: Optional[int] = None
