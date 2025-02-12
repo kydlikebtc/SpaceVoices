@@ -1,7 +1,12 @@
 from typing import List, Dict
 from app.models.script import Script, Character, DialogueLine
+from app.services.nlp_optimizer import NLPOptimizer
 
 class ScriptParser:
+    def __init__(self):
+        """Initialize the script parser."""
+        self.nlp_optimizer = NLPOptimizer()
+    
     @staticmethod
     def validate_characters(script: Script) -> bool:
         """Validate that all dialogue lines reference existing characters."""
@@ -20,3 +25,8 @@ class ScriptParser:
     def get_total_duration(script: Script) -> float:
         """Calculate approximate total duration based on pauses."""
         return sum(line.pause_before + line.pause_after for line in script.dialogue)
+    
+    async def optimize_script(self, script: Script) -> Script:
+        """Optimize script dialogue using NLP."""
+        script.dialogue = await self.nlp_optimizer.optimize_dialogue(script.dialogue)
+        return script
