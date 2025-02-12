@@ -1,3 +1,4 @@
+from typing import Optional
 import pytest
 from fastapi.testclient import TestClient
 from app.main import app
@@ -49,7 +50,7 @@ def mock_voice_generator(monkeypatch):
 @pytest.fixture
 def mock_twitter_service(monkeypatch):
     class MockTwitterService:
-        async def create_space(self, title: str, description: str = None):
+        async def create_space(self, title: str, description: Optional[str] = None):
             return "mock_space_id"
             
         async def start_space(self, space_id: str):
