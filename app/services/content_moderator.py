@@ -46,10 +46,20 @@ class ContentModerator:
         """Check for potentially sensitive content."""
         # Basic sentiment analysis for extreme negativity
         blob = TextBlob(text)
-        if blob.sentiment.polarity < -0.7:
+        # Lower threshold to catch more sensitive content
+        if blob.sentiment.polarity < -0.3:
             return True
             
-        # Add more sophisticated content checking here
+        # Check for concerning keywords
+        concerning_words = {
+            'terrible', 'hopeless', 'meaningless', 'awful',
+            'suicide', 'depression', 'anxiety', 'crisis'
+        }
+        
+        text_words = set(text.lower().split())
+        if any(word in text_words for word in concerning_words):
+            return True
+            
         return False
     
     async def _has_ai_disclosure(self, text: str) -> bool:

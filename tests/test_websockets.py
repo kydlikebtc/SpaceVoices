@@ -21,27 +21,29 @@ def mock_websocket():
 
 @pytest.mark.asyncio
 async def test_space_event_manager():
-    manager = SpaceEventManager()
-    mock_ws = Mock(spec=WebSocket)
-    mock_ws.accept = AsyncMock()
-    mock_ws.send_json = AsyncMock()
-    
-    # Test connection
-    space_id = "test_space_123"
-    await manager.connect(space_id, mock_ws)
-    assert space_id in manager.active_connections
-    
-    # Test event broadcast
-    event = SpaceEvent(
-        type="space_update",
-        data={"space_id": space_id, "state": "live"}
-    )
-    await manager.broadcast_event(space_id, event)
-    mock_ws.send_json.assert_called_once_with(event.model_dump())
-    
-    # Test disconnection
-    manager.disconnect(space_id)
-    assert space_id not in manager.active_connections
+    with patch.object(SpaceEventManager, '_start_heartbeat', AsyncMock()) as mock_heartbeat:
+        manager = SpaceEventManager()
+        mock_ws = Mock(spec=WebSocket)
+        mock_ws.accept = AsyncMock()
+        mock_ws.send_json = AsyncMock()
+        
+        # Test connection
+        space_id = "test_space_123"
+        await manager.connect(space_id, mock_ws)
+        assert space_id in manager.active_connections
+        mock_heartbeat.assert_called_once_with(space_id)
+        
+        # Test event broadcast
+        event = SpaceEvent(
+            type="space_update",
+            data={"space_id": space_id, "state": "live"}
+        )
+        await manager.broadcast_event(space_id, event)
+        mock_ws.send_json.assert_called_once_with(event.model_dump())
+        
+        # Test disconnection
+        manager.disconnect(space_id)
+        assert space_id not in manager.active_connections
 
 @pytest.mark.asyncio
 async def test_handle_space_events(mock_websocket, monkeypatch):
