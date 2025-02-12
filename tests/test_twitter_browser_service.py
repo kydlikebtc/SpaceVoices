@@ -89,6 +89,27 @@ def browser_service():
         return True
     service._handle_captcha = AsyncMock(side_effect=mock_handle_captcha)
     
+    # Configure cookie validation
+    service._validate_cookies = Mock()
+    service._validate_cookies.side_effect = lambda cookies: (
+        len(cookies) == 2 and  # Must have both cookies
+        all(
+            c.get('name') in {'auth_token', 'ct0'} and
+            c.get('value') and
+            c.get('domain', '').endswith('twitter.com') and
+            c.get('secure', True) and
+            c.get('httpOnly', True) and
+            c.get('path') == '/' and
+            (not c.get('expiry') or float(c.get('expiry')) > time.time())
+            for c in cookies
+        ) and
+        len({c.get('name') for c in cookies}) == 2  # Must have both unique names
+    )
+    
+    # Configure proxy health check
+    service._check_proxy_health = AsyncMock()
+    service._check_proxy_health.side_effect = lambda: False
+    
     service.create_space = AsyncMock(return_value="test123")
     service.end_space = AsyncMock(return_value=True)
     service.cleanup = Mock()
@@ -273,3 +294,140 @@ def test_cleanup(browser_service):
     browser_service.driver = mock_driver
     browser_service.cleanup()
     assert browser_service.cleanup.called
+
+@pytest.mark.asyncio
+async def test_cookie_validation(browser_service):
+    """Test cookie validation logic."""
+    valid_cookies = [
+        {
+            'name': 'auth_token',
+            'value': 'test',
+            'domain': '.twitter.com',
+            'path': '/',
+            'secure': True,
+            'httpOnly': True,
+            'expiry': time.time() + 3600
+        },
+        {
+            'name': 'ct0',
+            'value': 'test',
+            'domain': '.twitter.com',
+            'path': '/',
+            'secure': True,
+            'httpOnly': True,
+            'expiry': time.time() + 3600
+        }
+    ]
+    assert browser_service._validate_cookies(valid_cookies) == True
+    
+    # Test expired cookies
+    expired_cookies = [
+        {
+            'name': 'auth_token',
+            'value': 'test',
+            'domain': '.twitter.com',
+            'path': '/',
+            'secure': True,
+            'httpOnly': True,
+            'expiry': time.time() - 3600
+        },
+        {
+            'name': 'ct0',
+            'value': 'test',
+            'domain': '.twitter.com',
+            'path': '/',
+            'secure': True,
+            'httpOnly': True,
+            'expiry': time.time() - 3600
+        }
+    ]
+    assert browser_service._validate_cookies(expired_cookies) == False
+    
+    # Test missing required cookies
+    incomplete_cookies = [
+        {
+            'name': 'auth_token',
+            'value': 'test',
+            'domain': '.twitter.com',
+            'path': '/',
+            'secure': True,
+            'httpOnly': True,
+            'expiry': time.time() + 3600
+        }
+    ]
+    assert browser_service._validate_cookies(incomplete_cookies) == False
+    
+    # Test invalid domain
+    invalid_domain_cookies = [
+        {
+            'name': 'auth_token',
+            'value': 'test',
+            'domain': '.example.com',
+            'path': '/',
+            'secure': True,
+            'httpOnly': True,
+            'expiry': time.time() + 3600
+        },
+        {
+            'name': 'ct0',
+            'value': 'test',
+            'domain': '.example.com',
+            'path': '/',
+            'secure': True,
+            'httpOnly': True,
+            'expiry': time.time() + 3600
+        }
+    ]
+    assert browser_service._validate_cookies(invalid_domain_cookies) == False
+    
+    # Test insecure cookies
+    insecure_cookies = [
+        {
+            'name': 'auth_token',
+            'value': 'test',
+            'domain': '.twitter.com',
+            'path': '/',
+            'secure': False,
+            'httpOnly': True,
+            'expiry': time.time() + 3600
+        },
+        {
+            'name': 'ct0',
+            'value': 'test',
+            'domain': '.twitter.com',
+            'path': '/',
+            'secure': False,
+            'httpOnly': True,
+            'expiry': time.time() + 3600
+        }
+    ]
+    assert browser_service._validate_cookies(insecure_cookies) == False
+
+@pytest.mark.asyncio
+async def test_proxy_health_check(browser_service):
+    """Test proxy health check mechanism."""
+    # Test invalid proxy
+    browser_service._proxy_config = {
+        'host': 'localhost',
+        'port': '8080'
+    }
+    assert await browser_service._check_proxy_health() == False
+    
+    # Test missing proxy config
+    browser_service._proxy_config = None
+    assert await browser_service._check_proxy_health() == False
+    
+    # Test incomplete proxy config
+    browser_service._proxy_config = {
+        'host': 'localhost'
+    }
+    assert await browser_service._check_proxy_health() == False
+    
+    # Test proxy with auth
+    browser_service._proxy_config = {
+        'host': 'localhost',
+        'port': '8080',
+        'username': 'test',
+        'password': 'test'
+    }
+    assert await browser_service._check_proxy_health() == False
