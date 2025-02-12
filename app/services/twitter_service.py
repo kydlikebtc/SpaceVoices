@@ -1,10 +1,11 @@
-from typing import Optional
+from typing import Optional, Dict
 from datetime import datetime
-import os
+import logging
 import tweepy
-from dotenv import load_dotenv
+from app.services.twitter_account_manager import TwitterAccountManager
+from app.services.spaces_interaction import SpacesInteractionService
 
-load_dotenv()
+logger = logging.getLogger(__name__)
 
 class TwitterSpacesError(Exception):
     """Custom exception for Twitter Spaces operations."""
@@ -12,58 +13,53 @@ class TwitterSpacesError(Exception):
 
 class TwitterSpacesService:
     def __init__(self):
-        self.api_key = os.getenv("TWITTER_API_KEY")
-        self.api_secret = os.getenv("TWITTER_API_SECRET")
-        self.access_token = os.getenv("TWITTER_ACCESS_TOKEN")
-        self.access_token_secret = os.getenv("TWITTER_ACCESS_TOKEN_SECRET")
+        """Initialize the service with multi-account support."""
+        self.account_manager = TwitterAccountManager()
+        self.interaction_services: Dict[str, SpacesInteractionService] = {}
         
-        if not all([self.api_key, self.api_secret, self.access_token, self.access_token_secret]):
-            raise ValueError("Missing required Twitter API credentials in environment variables")
-        
-        # Initialize Twitter client
-        self.client = tweepy.Client(
-            consumer_key=self.api_key,
-            consumer_secret=self.api_secret,
-            access_token=self.access_token,
-            access_token_secret=self.access_token_secret
-        )
-        
-        # Initialize API v1.1 for some Spaces features not available in v2
-        auth = tweepy.OAuth1UserHandler(
-            self.api_key,
-            self.api_secret,
-            self.access_token,
-            self.access_token_secret
-        )
-        self.api = tweepy.API(auth)
+        # Initialize default host account
+        host_client = self.account_manager.get_client("Host")
+        if not host_client:
+            raise ValueError("Missing required Host account configuration")
     
     async def create_space(
         self,
         title: str,
-        scheduled_start: Optional[datetime] = None,
-        description: Optional[str] = None
+        description: Optional[str] = None,
+        character: str = "Host",
+        scheduled_start: Optional[datetime] = None
     ) -> str:
         """
-        Create a Twitter Space.
+        Create a Twitter Space using a specific character's account.
         
         Args:
             title: Title of the Space
-            scheduled_start: Optional scheduled start time
             description: Optional Space description
+            character: Character name to use (defaults to "Host")
+            scheduled_start: Optional scheduled start time
             
         Returns:
             str: Space ID
+            
+        Raises:
+            ValueError: If character is invalid
+            TwitterSpacesError: If space creation fails
         """
         try:
+            # Get client for character
+            client = self.account_manager.get_client(character)
+            if not client:
+                raise ValueError(f"Invalid character: {character}")
+            
             # Add AI disclosure to description
             ai_disclosure = "[AI-GENERATED CONTENT] This Space features AI-generated voices and content."
             full_description = f"{ai_disclosure}\n\n{description}" if description else ai_disclosure
             
             # Create the Space
-            space = self.client.create_space(
+            space = client.create_space(
                 title=title,
                 scheduled_start=scheduled_start,
-                topic_ids=None  # Optional: Add relevant topic IDs
+                topic_ids=None
             )
             
             if not space.data:
@@ -71,8 +67,12 @@ class TwitterSpacesService:
             
             space_id = space.data['id']
             
-            # Update Space with description (using v1.1 API)
-            self.api.update_space(space_id, description=full_description)
+            # Create interaction service for this space
+            interaction_service = SpacesInteractionService(client)
+            self.interaction_services[character] = interaction_service
+            
+            # Start monitoring the space
+            await interaction_service.start_monitoring(space_id)
             
             return space_id
             
@@ -81,26 +81,47 @@ class TwitterSpacesService:
         except Exception as e:
             raise TwitterSpacesError(f"Unexpected error: {str(e)}")
     
-    async def start_space(self, space_id: str) -> bool:
-        """Start a created Space."""
+    async def start_space(self, space_id: str, character: str = "Host") -> bool:
+        """Start a created Space using a specific character's account."""
         try:
-            self.api.start_space(space_id)
+            client = self.account_manager.get_client(character)
+            if not client:
+                raise ValueError(f"Invalid character: {character}")
+                
+            await client.start_space(space_id)
             return True
-        except tweepy.TweepyException as e:
-            raise TwitterSpacesError(f"Failed to start Space: {str(e)}")
+        except Exception as e:
+            logger.error(f"Failed to start Space: {str(e)}")
+            return False
     
-    async def end_space(self, space_id: str) -> bool:
-        """End an active Space."""
+    async def end_space(self, space_id: str, character: str = "Host") -> bool:
+        """End an active Space using a specific character's account."""
         try:
-            self.api.end_space(space_id)
+            client = self.account_manager.get_client(character)
+            if not client:
+                raise ValueError(f"Invalid character: {character}")
+            
+            await client.end_space(space_id)
+            
+            # Stop monitoring if we were monitoring this space
+            if character in self.interaction_services:
+                await self.interaction_services[character].stop_monitoring(space_id)
+                del self.interaction_services[character]
+            
             return True
-        except tweepy.TweepyException as e:
-            raise TwitterSpacesError(f"Failed to end Space: {str(e)}")
+        except Exception as e:
+            logger.error(f"Failed to end Space: {str(e)}")
+            return False
     
-    async def get_space_status(self, space_id: str) -> dict:
-        """Get current status of a Space."""
+    async def get_space_status(self, space_id: str, character: str = "Host") -> dict:
+        """Get current status of a Space using a specific character's account."""
         try:
-            space = self.client.get_space(space_id)
+            client = self.account_manager.get_client(character)
+            if not client:
+                raise ValueError(f"Invalid character: {character}")
+                
+            space = await client.get_space(space_id)
             return space.data
-        except tweepy.TweepyException as e:
+        except Exception as e:
+            logger.error(f"Failed to get Space status: {str(e)}")
             raise TwitterSpacesError(f"Failed to get Space status: {str(e)}")
