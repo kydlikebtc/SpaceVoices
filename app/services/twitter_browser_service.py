@@ -47,24 +47,25 @@ class TwitterBrowserService:
         """Clean up any existing Chrome processes."""
         try:
             # Kill Chrome processes
-            for proc in psutil.process_iter(['pid', 'name']):
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
                 try:
-                    if any(x in proc.info['name'].lower() for x in ['chrome', 'chromium']):
-                        proc.kill()
+                    proc_name = proc.info['name'].lower()
+                    if any(x in proc_name for x in ['chrome', 'chromium']):
+                        # Get command line to check if it's our Chrome instance
+                        cmdline = ' '.join(proc.info['cmdline'] or [])
+                        if self._temp_dir and self._temp_dir in cmdline:
+                            proc.kill()
+                            logger.info(f"Killed Chrome process {proc.pid}")
                 except (psutil.NoSuchProcess, psutil.AccessDenied):
                     pass
             
             # Clean up temporary directories
-            temp_dirs = ['/tmp/chrome*', '/dev/shm/chrome*']
-            for pattern in temp_dirs:
+            if self._temp_dir and os.path.exists(self._temp_dir):
                 try:
-                    for path in Path(os.path.dirname(pattern)).glob(os.path.basename(pattern)):
-                        if path.is_dir():
-                            shutil.rmtree(str(path), ignore_errors=True)
-                        else:
-                            path.unlink(missing_ok=True)
+                    shutil.rmtree(self._temp_dir, ignore_errors=True)
+                    logger.info(f"Cleaned up temporary directory: {self._temp_dir}")
                 except Exception as e:
-                    logger.warning(f"Failed to clean up {pattern}: {e}")
+                    logger.warning(f"Failed to clean up {self._temp_dir}: {e}")
             
             await asyncio.sleep(2)
         except Exception as e:
@@ -130,7 +131,8 @@ class TwitterBrowserService:
         
         # Core settings with improved stability
         options.add_argument('--no-sandbox')
-        options.add_argument('--headless=new')
+        # Disable headless mode for verification testing
+        # options.add_argument('--headless=new')
         options.add_argument('--disable-gpu')
         options.add_argument('--disable-dev-shm-usage')
         options.add_argument('--disable-crash-reporter')
@@ -145,7 +147,6 @@ class TwitterBrowserService:
         options.add_argument(f'--force-device-scale-factor={scale_factor}')
         
         # Profile and data directory with enhanced privacy
-        options.add_argument(f'--user-data-dir={self._temp_dir}')
         options.add_argument('--disable-sync')
         options.add_argument('--disable-encryption')
         options.add_argument('--disable-features=UserAgentClientHint')
