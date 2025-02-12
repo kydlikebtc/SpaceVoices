@@ -33,6 +33,12 @@ A powerful system that converts text scripts into multi-voice podcasts and autom
   - Scheduled broadcasting support
   - Clear AI-generated content disclosure
   - WebSocket-based real-time updates
+  - Multiple integration methods:
+    - Official Twitter API integration
+    - Browser automation fallback
+    - Feature flag controlled switching
+    - Automatic resource cleanup
+    - Retry mechanisms for reliability
 
 - **System Features**
   - Resource monitoring and management
@@ -219,6 +225,31 @@ The WebSocket endpoint emits the following event types:
 - A/B testing support
 - Real-time feature updates
 
+### Twitter Integration Methods
+
+The system supports two methods of Twitter Spaces integration:
+
+1. **API-Based Integration**
+   - Uses official Twitter API v2
+   - Full support for Space creation and management
+   - Real-time event monitoring
+   - Rate limit aware with automatic backoff
+   - Requires valid API credentials
+
+2. **Browser Automation**
+   - Alternative method for environments without API access
+   - Uses Selenium WebDriver for browser control
+   - Supports all core Space operations
+   - Automatic cleanup of browser resources
+   - Built-in retry mechanisms for reliability
+
+The integration method can be controlled via feature flags:
+```bash
+# Enable browser automation
+USE_BROWSER_AUTOMATION=true
+BROWSER_AUTO_RETRY=true
+```
+
 ### Important Notes
 - **API Keys**: All credentials are stored securely and can be encrypted
 - **Storage**: Temporary files are automatically cleaned up
@@ -228,6 +259,8 @@ The WebSocket endpoint emits the following event types:
 - **Account Management**: Secure multi-account credential handling
 - **WebSocket Connections**: Robust error handling with reconnection
 - **Monitoring**: Real-time health and performance tracking
+- **Browser Resources**: Automatic cleanup of browser sessions
+- **Integration Methods**: Feature flag controlled switching between API and browser automation
 
 ## Development
 

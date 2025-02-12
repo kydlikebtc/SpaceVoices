@@ -10,7 +10,9 @@ class TwitterAccountManager:
     def __init__(self):
         """Initialize the account manager and load accounts from environment."""
         self.accounts: Dict[str, TwitterAccount] = {}
+        self.browser_accounts: Dict[str, Dict[str, str]] = {}
         self._load_accounts()
+        self._load_browser_accounts()
     
     def _load_accounts(self):
         """Load accounts from environment variables."""
@@ -47,3 +49,23 @@ class TwitterAccountManager:
             access_token=account.access_token,
             access_token_secret=account.access_token_secret
         )
+    
+    def _load_browser_accounts(self):
+        """Load browser accounts from environment variables."""
+        load_dotenv()
+        account_prefix = "TWITTER_BROWSER_"
+        i = 1
+        while True:
+            base_key = f"{account_prefix}{i}"
+            if not os.getenv(f"{base_key}_CHARACTER"):
+                break
+                
+            self.browser_accounts[os.getenv(f"{base_key}_CHARACTER")] = {
+                "username": os.getenv(f"{base_key}_USERNAME"),
+                "password": os.getenv(f"{base_key}_PASSWORD")
+            }
+            i += 1
+    
+    def get_browser_credentials(self, character_name: str) -> Optional[Dict[str, str]]:
+        """Get browser credentials for a character."""
+        return self.browser_accounts.get(character_name)

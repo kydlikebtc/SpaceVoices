@@ -14,7 +14,9 @@ class FeatureFlags:
             "enable_real_time_monitoring": self._parse_bool_env("ENABLE_REAL_TIME_MONITORING", True),
             "enable_rate_limiting": self._parse_bool_env("ENABLE_RATE_LIMITING", True),
             "enable_heartbeat": self._parse_bool_env("ENABLE_HEARTBEAT", True),
-            "enable_resource_monitoring": self._parse_bool_env("ENABLE_RESOURCE_MONITORING", True)
+            "enable_resource_monitoring": self._parse_bool_env("ENABLE_RESOURCE_MONITORING", True),
+            "use_browser_automation": self._parse_bool_env("USE_BROWSER_AUTOMATION", False),
+            "browser_auto_retry": self._parse_bool_env("BROWSER_AUTO_RETRY", True)
         }
         logger.info(f"Feature flags initialized: {self.flags}")
     
