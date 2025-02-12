@@ -15,14 +15,14 @@ podcasts_db = {}
 @router.post("/scripts", response_model=Dict[str, int])
 async def create_script(script: Script):
     """Create a new script."""
+    # Validate characters in dialogue
+    if not ScriptParser.validate_characters(script):
+        raise HTTPException(
+            status_code=400,
+            detail="All dialogue lines must reference existing characters"
+        )
+    
     try:
-        # Validate characters in dialogue
-        if not ScriptParser.validate_characters(script):
-            raise HTTPException(
-                status_code=400,
-                detail="All dialogue lines must reference existing characters"
-            )
-        
         # Store script (using simple incremental ID for demo)
         script_id = len(scripts_db) + 1
         scripts_db[script_id] = script

@@ -43,7 +43,10 @@ def mock_voice_generator(monkeypatch):
             return temp
     
     from app.services.voice_generator import ElevenLabsGenerator
-    monkeypatch.setattr(ElevenLabsGenerator, "__init__", lambda self: None)
+    def mock_init(self):
+        pass
+    
+    monkeypatch.setattr(ElevenLabsGenerator, "__init__", mock_init)
     monkeypatch.setattr(ElevenLabsGenerator, "generate_voice", MockVoiceGenerator().generate_voice)
     return MockVoiceGenerator()
 
@@ -57,7 +60,11 @@ def mock_twitter_service(monkeypatch):
             return True
             
     from app.services.twitter_service import TwitterSpacesService
-    monkeypatch.setattr(TwitterSpacesService, "__init__", lambda self: None)
-    monkeypatch.setattr(TwitterSpacesService, "create_space", MockTwitterService().create_space)
-    monkeypatch.setattr(TwitterSpacesService, "start_space", MockTwitterService().start_space)
-    return MockTwitterService()
+    def mock_init(self):
+        pass
+    
+    mock_service = MockTwitterService()
+    monkeypatch.setattr(TwitterSpacesService, "__init__", mock_init)
+    monkeypatch.setattr(TwitterSpacesService, "create_space", mock_service.create_space)
+    monkeypatch.setattr(TwitterSpacesService, "start_space", mock_service.start_space)
+    return mock_service
