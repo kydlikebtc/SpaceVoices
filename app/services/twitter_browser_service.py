@@ -1020,9 +1020,15 @@ class TwitterBrowserService:
                             "div[data-testid='sidebarColumn']"
                         ]
                 
-                for selector in success_indicators:
+                login_indicators = [
+                    "div[data-testid='sidebarColumn']",
+                    "div[data-testid='primaryColumn']",
+                    "header[role='banner']"
+                ]
+                for selector in login_indicators:
                     try:
-                        element = WebDriverWait(self.driver, 10).until(
+                        driver = self._get_driver()
+                        element = WebDriverWait(driver, 10).until(
                             EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                         )
                         if element.is_displayed():
@@ -1216,12 +1222,14 @@ class TwitterBrowserService:
             for attempt in range(self._max_retries):
                 try:
                     logger.info(f"Navigating to home page (attempt {attempt + 1}/{self._max_retries})...")
-                    self.driver.get('https://x.com/home')
+                    driver = self._get_driver()
+                    driver.get('https://x.com/home')
                     await asyncio.sleep(5)  # Give more time for page load
                     
                     # Check current state
-                    logger.info(f"Current URL after navigation: {self.driver.current_url}")
-                    logger.info(f"Current title after navigation: {self.driver.title}")
+                    driver = self._get_driver()
+                    logger.info(f"Current URL after navigation: {driver.current_url}")
+                    logger.info(f"Current title after navigation: {driver.title}")
                     
                     # Check for login indicators with improved error handling
                     login_indicators = [
@@ -1233,7 +1241,7 @@ class TwitterBrowserService:
                     for selector in login_indicators:
                         try:
                             driver = self._get_driver()
-                    WebDriverWait(driver, 10).until(
+                            WebDriverWait(driver, 10).until(
                                 EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                             )
                             logger.info(f"Found login indicator: {selector}")
