@@ -90,15 +90,25 @@ class NLPOptimizer:
                 return 3
             return 1
         
-        # Calculate weighted scores
-        prev_weight = sum(get_word_weight(w) for w in prev_words)
-        curr_weight = sum(get_word_weight(w) for w in curr_words)
-        overlap_weight = sum(get_word_weight(w) for w in common_words)
+        # Calculate weighted scores with emphasis on dialogue patterns
+        def get_dialogue_bonus(words: set[str]) -> float:
+            # Give bonus for question-answer patterns
+            has_question = any(w in question_words for w in words)
+            has_response = any(w in {'yes', 'no', 'thanks', 'thank', 'good', 'great', 'ok', 'okay'} for w in words)
+            return 0.3 if (has_question and has_response) else 0.0
         
-        # Normalize score to [0, 1] range
-        if prev_weight == 0 or curr_weight == 0:
+        # Base score from weighted word overlap
+        overlap_weight = sum(get_word_weight(w) for w in common_words)
+        max_weight = max(
+            sum(get_word_weight(w) for w in prev_words),
+            sum(get_word_weight(w) for w in curr_words)
+        )
+        
+        if max_weight == 0:
             return 1.0 if not (prev_words or curr_words) else 0.0
-            
-        # Calculate Jaccard-like similarity with weights
-        score = (2.0 * overlap_weight) / (prev_weight + curr_weight)
-        return score
+        
+        # Calculate final score with dialogue pattern bonus
+        base_score = overlap_weight / max_weight
+        dialogue_bonus = get_dialogue_bonus(prev_words.union(curr_words))
+        
+        return min(1.0, base_score + dialogue_bonus)
