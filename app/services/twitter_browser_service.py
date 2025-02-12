@@ -915,10 +915,16 @@ class TwitterBrowserService:
                             continue
                         return False
                         
-                        # Check for verification/error pages
+                        # Check for verification/error/CAPTCHA pages
                         current_url = self.driver.current_url.lower()
-                        if any(x in current_url for x in ['challenge', 'verify', 'error']):
-                            logger.error(f"Hit verification/error page: {current_url}")
+                        if any(x in current_url for x in ['challenge', 'verify', 'error', 'captcha']):
+                            logger.warning(f"Hit verification/CAPTCHA page: {current_url}")
+                            
+                            # Handle potential CAPTCHA
+                            if await self._handle_captcha():
+                                logger.info("CAPTCHA handled successfully")
+                                continue
+                            
                             if verify_attempt < max_verify_attempts - 1:
                                 logger.info("Retrying verification...")
                                 await asyncio.sleep(2)
@@ -996,6 +1002,64 @@ class TwitterBrowserService:
         if self.driver is None:
             raise RuntimeError("Browser driver is not initialized")
         return self.driver
+        
+    async def _handle_captcha(self, timeout: int = 300) -> bool:
+        """
+        Handle CAPTCHA detection and manual solving.
+        
+        Args:
+            timeout: Maximum time to wait for CAPTCHA completion in seconds
+            
+        Returns:
+            bool: True if CAPTCHA was completed, False otherwise
+        """
+        driver = self._get_driver()
+        captcha_selectors = [
+            "iframe[title*='reCAPTCHA']",
+            "iframe[src*='captcha']",
+            "iframe[src*='challenge']",
+            "[data-testid='challenge_response']",
+            "#captcha-challenge",
+            "[aria-label*='CAPTCHA']",
+            "[aria-label*='verification']"
+        ]
+        
+        try:
+            # Check for CAPTCHA presence
+            for selector in captcha_selectors:
+                try:
+                    element = WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                    )
+                    if element.is_displayed():
+                        logger.info(f"Found CAPTCHA element: {selector}")
+                        
+                        # Notify user
+                        logger.warning("CAPTCHA detected - requires manual intervention")
+                        <message_user>CAPTCHA detected. Please assist with manual verification. The browser window will be kept open for 5 minutes. After completing the CAPTCHA, the automation will continue.</message_user>
+                        
+                        # Wait for CAPTCHA completion
+                        try:
+                            WebDriverWait(driver, timeout).until_not(
+                                lambda d: any(
+                                    d.find_elements(By.CSS_SELECTOR, s) 
+                                    for s in captcha_selectors
+                                )
+                            )
+                            logger.info("CAPTCHA appears to be completed")
+                            await asyncio.sleep(2)  # Wait for any post-CAPTCHA processing
+                            return True
+                        except TimeoutException:
+                            logger.error("CAPTCHA not completed within timeout")
+                            return False
+                except TimeoutException:
+                    continue
+            
+            return True  # No CAPTCHA found
+            
+        except Exception as e:
+            logger.error(f"Error handling CAPTCHA: {str(e)}")
+            return False
 
     async def _ensure_logged_in(self) -> bool:
         """Ensure we are logged in and on the home page."""
@@ -1104,6 +1168,13 @@ class TwitterBrowserService:
             )
             create_button.click()
             await asyncio.sleep(2)
+            
+            # Check for CAPTCHA after clicking create button
+            if await self._handle_captcha():
+                logger.info("CAPTCHA handled during space creation")
+            else:
+                logger.error("Failed to handle CAPTCHA during space creation")
+                return None
             
             # Set title
             logger.info("Looking for title input...")
