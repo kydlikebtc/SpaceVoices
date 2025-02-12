@@ -128,6 +128,9 @@ class TwitterBrowserService:
         """Configure Chrome options with enhanced anti-detection."""
         options = Options()
         
+        # Set Chrome binary location
+        options.binary_location = "/usr/bin/google-chrome-stable"
+        
         # Core settings with improved stability
         options.add_argument('--no-sandbox')
         options.add_argument('--headless=new')
