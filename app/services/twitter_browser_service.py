@@ -33,10 +33,13 @@ class TwitterBrowserService:
         self.feature_flags = FeatureFlags()
         self.driver: Optional[webdriver.Chrome] = None
         self.credentials: Dict[str, str] = {}
-        self._temp_dir: Optional[str] = None
-        self._session_id: Optional[str] = None
+        self._temp_dir: str = ""  # Empty string as default, will be set in _create_temp_directory
+        self._session_id: str = ""  # Empty string as default
         self._debug_port: Optional[int] = None
         self._proxy_config: Optional[Dict[str, str]] = None
+        self._backoff_delay: float = 5.0
+        self._max_backoff_delay: float = 60.0
+        self._max_retries: int = 3
         self._session_duration: int = int(os.getenv('BROWSER_SESSION_DURATION', '3600'))  # 1 hour default
         self._session_start_time: Optional[float] = None
         self._backoff_delay: float = 5.0  # Initial backoff delay in seconds
@@ -81,11 +84,11 @@ class TwitterBrowserService:
             
             # Create temporary directory in /tmp
             temp_dir = tempfile.mkdtemp(prefix=session_dir)
-            if temp_dir is None:
+            if not temp_dir:
                 raise RuntimeError("Failed to create temporary directory")
             
             os.chmod(temp_dir, 0o700)
-            self._temp_dir = temp_dir
+            self._temp_dir: str = temp_dir  # Type annotation to ensure it's always str
             
             # Create minimal directory structure
             default_dir = os.path.join(temp_dir, 'Default')
@@ -275,7 +278,7 @@ class TwitterBrowserService:
         self._session_start_time = time.time()
         
         # Initialize driver with retry
-        max_retries = 3
+        max_retries = self._max_retries
         last_error: Optional[Exception] = None
         
         for attempt in range(max_retries):
@@ -296,6 +299,7 @@ class TwitterBrowserService:
                 
                 # Execute CDP commands to prevent detection
                 stealth_js = """
+                    // Enhanced anti-detection script with comprehensive browser property spoofing
                     // Override webdriver and plugins
                     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                     Object.defineProperty(navigator, 'plugins', { 
@@ -332,46 +336,10 @@ class TwitterBrowserService:
                     };
                 """
                 
-                self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                    "source": stealth_js
-                })
-                
-                # Success
-                logger.info("Successfully initialized Chrome browser")
-                return
-                
-            except Exception as e:
-                last_error = e
-                logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
-                
-                # Cleanup on failure
-                if hasattr(self, 'driver') and self.driver:
-                    try:
-                        self.driver.quit()
-                    except:
-                        pass
-                    self.driver = None
-                
-                # Last attempt
-                if attempt == max_retries - 1:
-                    raise RuntimeError(f"Failed to initialize browser after {max_retries} attempts: {str(last_error)}")
-                
-                await asyncio.sleep(2)
-        
-        # Initialize driver with retry
-        for attempt in range(max_retries):
-            try:
-                # Initialize driver with explicit service
-                driver = webdriver.Chrome(service=service, options=options)
-                driver.set_page_load_timeout(30)
-                driver.implicitly_wait(10)
-                
-                # Test browser is working
-                driver.get('about:blank')
-                await asyncio.sleep(1)
-                
-                # Store driver
-                self.driver = driver
+                if isinstance(self.driver, webdriver.Chrome):
+                    self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                        "source": stealth_js
+                    })
                 
                 # Success
                 logger.info("Successfully initialized Chrome browser")
@@ -429,41 +397,29 @@ class TwitterBrowserService:
         service = Service()
         
         # Initialize driver with retry
-        max_retries = 3
-        last_error = None
-        
-        # Initialize driver with retry
-        max_retries = 3
-        last_error = None
+        max_retries = self._max_retries
+        last_error: Optional[Exception] = None
         
         for attempt in range(max_retries):
             try:
                 # Kill any existing Chrome processes
-                os.system('pkill -f chrome')
+                await self._cleanup_chrome_processes()
                 await asyncio.sleep(2)
                 
-                # Initialize driver with minimal options
-                self.driver = webdriver.Chrome(options=options)
-                self.driver.implicitly_wait(10)
+                # Initialize driver with explicit service
+                driver = webdriver.Chrome(service=service, options=options)
+                driver.set_page_load_timeout(30)
+                driver.implicitly_wait(10)
                 
                 # Test browser is working
-                self.driver.get('about:blank')
+                driver.get('about:blank')
                 await asyncio.sleep(1)
                 
-                # Execute CDP commands to prevent detection
-                self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                    "source": """
-                        Object.defineProperty(navigator, 'webdriver', {
-                            get: () => undefined
-                        });
-                        Object.defineProperty(navigator, 'plugins', {
-                            get: () => [1, 2, 3, 4, 5]
-                        });
-                        window.chrome = { runtime: {} };
-                    """
-                })
+                # Store driver after successful initialization
+                self.driver = driver
                 
                 # Success
+                logger.info("Successfully initialized Chrome browser")
                 break
                 
             except Exception as e:
@@ -471,22 +427,22 @@ class TwitterBrowserService:
                 logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
                 
                 # Cleanup on failure
-                if hasattr(self, 'driver') and self.driver:
+                if driver:
                     try:
-                        self.driver.quit()
-                    except:
+                        driver.quit()
+                    except Exception:
                         pass
-                    self.driver = None
                 
                 # Last attempt
                 if attempt == max_retries - 1:
-                    raise last_error
+                    raise RuntimeError(f"Failed to initialize browser after {max_retries} attempts: {str(last_error)}")
                 
                 await asyncio.sleep(2)
         
         # Profile and data directory
-        options.add_argument(f'--user-data-dir={data_dir}')
-        options.add_argument('--profile-directory=Default')
+        if self._temp_dir:
+            options.add_argument(f'--user-data-dir={self._temp_dir}')
+            options.add_argument('--profile-directory=Default')
         
         # Performance optimizations
         options.add_argument('--disable-dev-shm-usage')
@@ -652,11 +608,11 @@ class TwitterBrowserService:
             max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    self.driver = webdriver.Chrome(
+                    driver = webdriver.Chrome(
                         service=service,
                         options=options
                     )
-                    self.driver.implicitly_wait(10)
+                    driver.implicitly_wait(10)
                     
                     # Execute CDP commands to prevent detection
                     stealth_js = """
@@ -790,10 +746,12 @@ class TwitterBrowserService:
                         })();
                     """
                     
-                    self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
                         "source": stealth_js
                     })
                     
+                    # Store driver after successful initialization
+                    self.driver = driver
                     logger.info("Browser initialized successfully")
                     break
                 except Exception as e:
@@ -1105,11 +1063,11 @@ class TwitterBrowserService:
                 logger.error(f"Current title: {self.driver.title}")
             return False
     
-    def _get_driver(self) -> WebDriver:
+    def _get_driver(self) -> webdriver.Chrome:
         """Get the current driver or raise an exception."""
-        if self.driver is None:
+        if not isinstance(self.driver, webdriver.Chrome):
             raise RuntimeError("Browser driver is not initialized")
-        return self.driver
+        return cast(webdriver.Chrome, self.driver)
         
     async def _exponential_backoff(self) -> None:
         """Execute exponential backoff delay."""
@@ -1198,7 +1156,7 @@ class TwitterBrowserService:
                         
                         # Notify user
                         logger.warning("CAPTCHA detected - requires manual intervention")
-                        <message_user>CAPTCHA detected. Please assist with manual verification. The browser window will be kept open for 5 minutes. After completing the CAPTCHA, the automation will continue.</message_user>
+                        logger.info("Waiting for manual CAPTCHA completion...")
                         
                         # Wait for CAPTCHA completion
                         try:
