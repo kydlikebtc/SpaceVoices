@@ -1,4 +1,4 @@
-from typing import Optional, Dict
+from typing import Optional, Dict, cast, NoReturn
 import logging
 import time
 import asyncio
@@ -10,12 +10,13 @@ import json
 import tempfile
 from pathlib import Path
 from selenium import webdriver
+from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import TimeoutException, WebDriverException, NoSuchWindowException
 from webdriver_manager.chrome import ChromeDriverManager
 from app.services.feature_flags import FeatureFlags
 
@@ -27,11 +28,11 @@ class TwitterBrowserService:
     def __init__(self):
         """Initialize the browser service."""
         self.feature_flags = FeatureFlags()
-        self.driver = None
+        self.driver: Optional[webdriver.Chrome] = None
         self.credentials: Dict[str, str] = {}
-        self._temp_dir = None
-        self._session_id = None
-        self._debug_port = None
+        self._temp_dir: Optional[str] = None
+        self._session_id: Optional[str] = None
+        self._debug_port: Optional[int] = None
     
     async def _cleanup_chrome_processes(self):
         """Clean up any existing Chrome processes."""
@@ -60,7 +61,7 @@ class TwitterBrowserService:
         except Exception as e:
             logger.error(f"Error cleaning up Chrome processes: {e}")
 
-    async def _create_temp_directory(self):
+    async def _create_temp_directory(self) -> None:
         """Create a temporary directory for Chrome profile."""
         try:
             # Generate unique session directory
@@ -70,11 +71,15 @@ class TwitterBrowserService:
             session_dir = f'chrome_session_{timestamp}_{pid}_{rand_suffix}'
             
             # Create temporary directory in /tmp
-            self._temp_dir = tempfile.mkdtemp(prefix=session_dir)
-            os.chmod(self._temp_dir, 0o700)
+            temp_dir = tempfile.mkdtemp(prefix=session_dir)
+            if temp_dir is None:
+                raise RuntimeError("Failed to create temporary directory")
+            
+            os.chmod(temp_dir, 0o700)
+            self._temp_dir = temp_dir
             
             # Create minimal directory structure
-            default_dir = os.path.join(self._temp_dir, 'Default')
+            default_dir = os.path.join(temp_dir, 'Default')
             os.makedirs(default_dir, mode=0o700)
             
             # Create preferences file
@@ -114,40 +119,55 @@ class TwitterBrowserService:
         """Configure Chrome options with enhanced anti-detection."""
         options = Options()
         
-        # Core settings
+        # Core settings with improved stability
         options.add_argument('--no-sandbox')
         options.add_argument('--headless=new')
         options.add_argument('--disable-gpu')
         options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-crash-reporter')
+        options.add_argument('--disable-in-process-stack-traces')
+        options.add_argument('--disable-logging')
         
-        # Random window size for more human-like appearance
+        # Enhanced window and viewport settings
         width = random.randint(1024, 1920)
         height = random.randint(768, 1080)
+        scale_factor = round(random.uniform(1.0, 2.0), 2)
         options.add_argument(f'--window-size={width},{height}')
+        options.add_argument(f'--force-device-scale-factor={scale_factor}')
         
-        # Profile and data directory
+        # Profile and data directory with enhanced privacy
         options.add_argument(f'--user-data-dir={self._temp_dir}')
+        options.add_argument('--disable-sync')
+        options.add_argument('--disable-encryption')
+        options.add_argument('--disable-features=UserAgentClientHint')
         
-        # Performance and stability
+        # Performance and stability improvements
         options.add_argument('--disable-background-networking')
         options.add_argument('--disable-background-timer-throttling')
-        options.add_argument('--disable-extensions')
-        options.add_argument('--disable-sync')
-        options.add_argument('--disable-translate')
+        options.add_argument('--disable-backgrounding-occluded-windows')
+        options.add_argument('--disable-breakpad')
+        options.add_argument('--disable-component-extensions-with-background-pages')
+        options.add_argument('--disable-features=TranslateUI,BlinkGenPropertyTrees')
+        options.add_argument('--disable-ipc-flooding-protection')
         
-        # Enhanced anti-detection
+        # Enhanced anti-detection measures
         options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_argument('--disable-features=IsolateOrigins,site-per-process')
+        options.add_argument('--disable-features=IsolateOrigins,site-per-process,SitePerProcess')
         options.add_argument('--disable-site-isolation-trials')
+        options.add_argument('--disable-web-security')
+        options.add_argument('--allow-running-insecure-content')
         
-        # Random user agent
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0'
-        ]
-        options.add_argument(f'--user-agent={random.choice(user_agents)}')
+        # Randomized user agent with consistent platform
+        platforms = ['Windows NT 10.0', 'Macintosh; Intel Mac OS X 10_15_7']
+        selected_platform = random.choice(platforms)
+        chrome_version = f"{random.randint(100, 121)}.0.{random.randint(0, 9999)}.{random.randint(0, 99)}"
+        
+        if 'Windows' in selected_platform:
+            user_agent = f'Mozilla/5.0 ({selected_platform}; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36'
+        else:
+            user_agent = f'Mozilla/5.0 ({selected_platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36'
+            
+        options.add_argument(f'--user-agent={user_agent}')
         
         # Enhanced preferences
         prefs = {
@@ -177,7 +197,7 @@ class TwitterBrowserService:
         
         return options
 
-    async def setup_browser(self):
+    async def setup_browser(self) -> None:
         """Set up the browser with proper configuration."""
         logger.info("Setting up browser...")
         
@@ -192,6 +212,8 @@ class TwitterBrowserService:
         
         # Create temporary directory
         await self._create_temp_directory()
+        if self._temp_dir is None:
+            raise RuntimeError("Failed to create temporary directory")
         
         # Configure Chrome options
         options = self._configure_chrome_options()
@@ -201,7 +223,7 @@ class TwitterBrowserService:
         
         # Initialize driver with retry
         max_retries = 3
-        last_error = None
+        last_error: Optional[Exception] = None
         
         for attempt in range(max_retries):
             try:
@@ -280,64 +302,41 @@ class TwitterBrowserService:
                 
                 await asyncio.sleep(2)
         
-        # Create unique temporary directory
-        timestamp = str(int(time.time()))
-        pid = os.getpid()
-        rand_suffix = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=8))
-        self._session_id = f"{timestamp}_{pid}_{rand_suffix}"
-        
-        # Create fresh profile directory
-        self._temp_dir = None
-        data_dir = None
-        
-        # Create unique temporary directory
-        timestamp = str(int(time.time()))
-        pid = os.getpid()
-        rand_suffix = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=8))
-        self._session_id = f"{timestamp}_{pid}_{rand_suffix}"
-        
-        # Create fresh profile directory
-        self._temp_dir = os.path.join('/tmp', f'chrome_tmp_{self._session_id}')
-        
-        # Ensure clean state
-        if os.path.exists(self._temp_dir):
+        # Initialize driver with retry
+        for attempt in range(max_retries):
             try:
-                shutil.rmtree(self._temp_dir)
+                # Initialize driver with explicit service
+                driver = webdriver.Chrome(service=service, options=options)
+                driver.set_page_load_timeout(30)
+                driver.implicitly_wait(10)
+                
+                # Test browser is working
+                driver.get('about:blank')
                 await asyncio.sleep(1)
+                
+                # Store driver
+                self.driver = driver
+                
+                # Success
+                logger.info("Successfully initialized Chrome browser")
+                return
+                
             except Exception as e:
-                logger.error(f"Failed to remove directory: {e}")
-                raise
-        
-        # Create minimal directory structure
-        try:
-            # Create base directory with strict permissions
-            os.makedirs(self._temp_dir, mode=0o700)
-            logger.info(f"Created profile directory: {self._temp_dir}")
-            
-            # Set Chrome data directory
-            data_dir = self._temp_dir
-            
-        except Exception as e:
-            logger.error(f"Failed to create directory: {e}")
-            raise
-            
-        logger.info(f"Created Chrome directories in: {self._temp_dir}")
-        
-        logger.info(f"Created Chrome directories in: {self._temp_dir}")
-        
-        options = Options()
-        # Minimal browser configuration
-        options = Options()
-        
-        # Core settings
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')
-        options.add_argument('--window-size=1920,1080')
-        
-        # Remote debugging
-        debug_port = random.randint(9222, 9999)
-        options.add_argument(f'--remote-debugging-port={debug_port}')
+                last_error = e
+                logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
+                
+                # Cleanup on failure
+                if driver:
+                    try:
+                        driver.quit()
+                    except Exception:
+                        pass
+                
+                # Last attempt
+                if attempt == max_retries - 1:
+                    raise RuntimeError(f"Failed to initialize browser after {max_retries} attempts: {str(last_error)}")
+                
+                await asyncio.sleep(2)
         
         # Profile settings
         options.add_argument(f'--user-data-dir={data_dir}')
@@ -604,132 +603,134 @@ class TwitterBrowserService:
                     
                     # Execute CDP commands to prevent detection
                     stealth_js = """
-                        // Override webdriver
-                        Object.defineProperty(navigator, 'webdriver', {
-                            get: () => undefined
-                        });
-                        
-                        // Override plugins
-                        const getPlugins = () => {
-                            const plugins = [
-                                { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-                                { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-                                { name: 'Native Client', filename: 'internal-nacl-plugin' }
-                            ];
-                            const pluginArray = Object.create(PluginArray.prototype);
-                            plugins.forEach((plugin, i) => {
-                                const mimeTypes = Object.create(MimeTypeArray.prototype);
-                                Object.defineProperty(pluginArray, i, {
-                                    value: plugin,
-                                    enumerable: true
-                                });
-                                Object.defineProperty(pluginArray, plugin.name, {
-                                    value: plugin,
-                                    enumerable: false
-                                });
-                            });
-                            Object.defineProperty(pluginArray, 'length', {
-                                value: plugins.length,
-                                enumerable: false
-                            });
-                            return pluginArray;
-                        };
-                        Object.defineProperty(navigator, 'plugins', {
-                            get: () => getPlugins()
-                        });
-                        
-                        // Override languages
-                        Object.defineProperty(navigator, 'languages', {
-                            get: () => ['en-US', 'en']
-                        });
-                        
-                        // Override platform
-                        Object.defineProperty(navigator, 'platform', {
-                            get: () => 'Win32'
-                        });
-                        
-                        // Override chrome runtime
-                        window.chrome = {
-                            app: {
-                                isInstalled: false,
-                                InstallState: {
-                                    DISABLED: 'disabled',
-                                    INSTALLED: 'installed',
-                                    NOT_INSTALLED: 'not_installed'
-                                },
-                                RunningState: {
-                                    CANNOT_RUN: 'cannot_run',
-                                    READY_TO_RUN: 'ready_to_run',
-                                    RUNNING: 'running'
-                                }
-                            },
-                            runtime: {
-                                OnInstalledReason: {
-                                    CHROME_UPDATE: 'chrome_update',
-                                    INSTALL: 'install',
-                                    SHARED_MODULE_UPDATE: 'shared_module_update',
-                                    UPDATE: 'update'
-                                },
-                                OnRestartRequiredReason: {
-                                    APP_UPDATE: 'app_update',
-                                    OS_UPDATE: 'os_update',
-                                    PERIODIC: 'periodic'
-                                },
-                                PlatformArch: {
-                                    ARM: 'arm',
-                                    ARM64: 'arm64',
-                                    MIPS: 'mips',
-                                    MIPS64: 'mips64',
-                                    X86_32: 'x86-32',
-                                    X86_64: 'x86-64'
-                                },
-                                PlatformNaclArch: {
-                                    ARM: 'arm',
-                                    MIPS: 'mips',
-                                    MIPS64: 'mips64',
-                                    X86_32: 'x86-32',
-                                    X86_64: 'x86-64'
-                                },
-                                PlatformOs: {
-                                    ANDROID: 'android',
-                                    CROS: 'cros',
-                                    LINUX: 'linux',
-                                    MAC: 'mac',
-                                    OPENBSD: 'openbsd',
-                                    WIN: 'win'
-                                },
-                                RequestUpdateCheckStatus: {
-                                    NO_UPDATE: 'no_update',
-                                    THROTTLED: 'throttled',
-                                    UPDATE_AVAILABLE: 'update_available'
-                                }
-                            }
-                        };
-                        
-                        // Add WebGL support
-                        const getParameter = WebGLRenderingContext.prototype.getParameter;
-                        WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                            const isMobile = navigator.userAgent.includes('Mobile');
+                        // Enhanced anti-detection script
+                        (() => {
+                            // Override webdriver
+                            delete Object.getPrototypeOf(navigator).webdriver;
                             
-                            if (parameter === 37445) {
-                                return 'Intel Inc.';
-                            }
-                            if (parameter === 37446) {
-                                return isMobile ? 'Apple GPU' : 'Intel(R) Iris(TM) Graphics 6100';
+                            // Override plugins with realistic values
+                            const getPlugins = () => {
+                                const plugins = [
+                                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: 'Portable Document Format' },
+                                    { name: 'Native Client', filename: 'internal-nacl-plugin', description: 'Native Client Executable' }
+                                ];
+                                
+                                const mimeTypes = {
+                                    'application/pdf': { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+                                    'application/x-google-chrome-pdf': { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' }
+                                };
+                                
+                                const pluginArray = Object.create(PluginArray.prototype);
+                                const mimeTypeArray = Object.create(MimeTypeArray.prototype);
+                                
+                                // Set up MimeTypeArray
+                                Object.keys(mimeTypes).forEach((mt, i) => {
+                                    const mimeType = Object.create(MimeType.prototype);
+                                    Object.assign(mimeType, mimeTypes[mt]);
+                                    Object.defineProperty(mimeTypeArray, i, { value: mimeType, enumerable: true });
+                                    Object.defineProperty(mimeTypeArray, mimeType.type, { value: mimeType, enumerable: false });
+                                });
+                                
+                                // Set up PluginArray
+                                plugins.forEach((plugin, i) => {
+                                    const pluginInstance = Object.create(Plugin.prototype);
+                                    Object.assign(pluginInstance, plugin);
+                                    Object.defineProperty(pluginArray, i, { value: pluginInstance, enumerable: true });
+                                    Object.defineProperty(pluginArray, plugin.name, { value: pluginInstance, enumerable: false });
+                                });
+                                
+                                return pluginArray;
+                            };
+                            
+                            // Override navigator properties
+                            const navigatorProps = {
+                                languages: ['en-US', 'en'],
+                                platform: Math.random() > 0.5 ? 'Win32' : 'MacIntel',
+                                hardwareConcurrency: Math.floor(Math.random() * 8) + 4,
+                                deviceMemory: [2, 4, 8, 16][Math.floor(Math.random() * 4)],
+                                maxTouchPoints: Math.random() > 0.5 ? 0 : 5,
+                                vendor: 'Google Inc.',
+                                connection: {
+                                    effectiveType: ['4g', '3g'][Math.floor(Math.random() * 2)],
+                                    rtt: Math.floor(Math.random() * 100),
+                                    downlink: Math.floor(Math.random() * 10) + 5,
+                                    saveData: false
+                                }
+                            };
+                            
+                            Object.entries(navigatorProps).forEach(([key, value]) => {
+                                if (typeof value === 'object' && value !== null) {
+                                    Object.defineProperty(navigator, key, {
+                                        get: () => value
+                                    });
+                                } else {
+                                    Object.defineProperty(navigator, key, {
+                                        get: () => value
+                                    });
+                                }
+                            });
+                            
+                            // Enhanced WebGL fingerprint randomization
+                            const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
+                            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                                // Add noise to color depth
+                                if (parameter === this.ALPHA_BITS) return 8;
+                                if (parameter === this.RED_BITS) return 8;
+                                if (parameter === this.GREEN_BITS) return 8;
+                                if (parameter === this.BLUE_BITS) return 8;
+                                
+                                // Randomize max texture size
+                                if (parameter === this.MAX_TEXTURE_SIZE) return 16384;
+                                if (parameter === this.MAX_VIEWPORT_DIMS) return [16384, 16384];
+                                
+                                // Vendor specific information
+                                if (parameter === 37445) return ['Intel Inc.', 'AMD', 'NVIDIA Corporation'][Math.floor(Math.random() * 3)];
+                                if (parameter === 37446) {
+                                    const gpus = [
+                                        'Intel(R) Iris(TM) Graphics 6100',
+                                        'NVIDIA GeForce RTX 3060',
+                                        'AMD Radeon RX 6700'
+                                    ];
+                                    return gpus[Math.floor(Math.random() * gpus.length)];
+                                }
+                                
+                                return originalGetParameter.apply(this, arguments);
+                            };
+                            
+                            // Add custom error handler to prevent stack trace leaks
+                            window.onerror = function(msg, url, line, col, error) {
+                                if (msg.toLowerCase().includes('script error')) return false;
+                                const suppressErrors = true;
+                                return suppressErrors;
+                            };
+                            
+                            // Override performance API
+                            const timing = performance.timing;
+                            if (timing) {
+                                const loadTimes = {};
+                                const now = Date.now();
+                                loadTimes.navigationStart = now - Math.random() * 1000;
+                                loadTimes.loadEventEnd = now;
+                                Object.keys(timing).forEach(key => {
+                                    Object.defineProperty(timing, key, {
+                                        get: () => loadTimes[key] || now - Math.random() * 100
+                                    });
+                                });
                             }
                             
-                            return getParameter.apply(this, arguments);
-                        };
-                        
-                        // Add touch support
-                        const touchSupport = {
-                            maxTouchPoints: 5,
-                            touchEvent: function() { return true; },
-                            touchStart: function() { return true; }
-                        };
-                        Object.defineProperty(navigator, 'maxTouchPoints', {
-                            get: () => touchSupport.maxTouchPoints
-                        });
+                            // Override Permissions API
+                            const originalQuery = Permissions.prototype.query;
+                            Permissions.prototype.query = function(params) {
+                                return originalQuery.call(this, params)
+                                    .then(result => {
+                                        if (params.name === 'notifications') {
+                                            result.state = 'denied';
+                                        }
+                                        return result;
+                                    });
+                            };
+                        })();
                     """
                     
                     self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
@@ -990,11 +991,18 @@ class TwitterBrowserService:
                 logger.error(f"Current title: {self.driver.title}")
             return False
     
+    def _get_driver(self) -> WebDriver:
+        """Get the current driver or raise an exception."""
+        if self.driver is None:
+            raise RuntimeError("Browser driver is not initialized")
+        return self.driver
+
     async def _ensure_logged_in(self) -> bool:
         """Ensure we are logged in and on the home page."""
         try:
+            driver = self._get_driver()
             # Check if we're already on home page and logged in
-            if 'home' in self.driver.current_url.lower() and not 'login' in self.driver.current_url.lower():
+            if 'home' in driver.current_url.lower() and not 'login' in driver.current_url.lower():
                 try:
                     # Quick check for logged-in state using multiple indicators
                     for selector in [
@@ -1003,7 +1011,7 @@ class TwitterBrowserService:
                         "[data-testid='AppTabBar_Profile_Link']"
                     ]:
                         try:
-                            WebDriverWait(self.driver, 5).until(
+                            WebDriverWait(driver, 5).until(
                                 EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                             )
                             logger.info(f"Found login indicator: {selector}")
@@ -1171,24 +1179,25 @@ class TwitterBrowserService:
             logger.error(f"Failed to end Space: {str(e)}")
             return False
     
-    def cleanup(self):
+    def cleanup(self) -> None:
         """Clean up browser resources."""
-        if self.driver:
-            try:
-                # Get all window handles and close them
+        try:
+            if self.driver is not None:
                 try:
+                    # Get all window handles and close them
                     for handle in self.driver.window_handles:
                         self.driver.switch_to.window(handle)
                         self.driver.close()
-                except:
+                except Exception:
                     pass
                 
-                # Quit the driver
-                self.driver.quit()
-            except Exception as e:
-                logger.error(f"Error quitting driver: {str(e)}")
-            finally:
-                self.driver = None
+                try:
+                    # Quit the driver
+                    self.driver.quit()
+                except Exception as e:
+                    logger.error(f"Error quitting driver: {str(e)}")
+                finally:
+                    self.driver = None
         
         # Kill any remaining chrome processes for this session
         if hasattr(self, '_session_id'):
@@ -1205,11 +1214,14 @@ class TwitterBrowserService:
                 logger.error(f"Error killing chrome processes: {str(e)}")
         
         # Clean up temporary directory
-        if hasattr(self, '_temp_dir') and self._temp_dir:
+        if self._temp_dir is not None:
+            temp_dir = self._temp_dir  # Store in local var for type safety
             try:
-                shutil.rmtree(self._temp_dir, ignore_errors=True)
-                logger.info(f"Cleaned up temporary directory: {self._temp_dir}")
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    logger.info(f"Cleaned up temporary directory: {temp_dir}")
             except Exception as e:
-                logger.error(f"Failed to clean up directory {self._temp_dir}: {str(e)}")
-            self._temp_dir = None
-            self._session_id = None
+                logger.error(f"Failed to clean up directory {temp_dir}: {str(e)}")
+            finally:
+                self._temp_dir = None
+                self._session_id = None
