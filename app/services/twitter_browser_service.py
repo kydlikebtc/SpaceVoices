@@ -903,6 +903,16 @@ class TwitterBrowserService:
                         WebDriverWait(self.driver, 15).until(
                             lambda driver: 'flow/login' not in driver.current_url.lower()
                         )
+                    except TimeoutException:
+                        logger.error("Timeout waiting for navigation")
+                        if verify_attempt < max_verify_attempts - 1:
+                            continue
+                        return False
+                    except Exception as e:
+                        logger.error(f"Error during navigation: {str(e)}")
+                        if verify_attempt < max_verify_attempts - 1:
+                            continue
+                        return False
                         
                         # Check for verification/error pages
                         current_url = self.driver.current_url.lower()
