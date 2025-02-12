@@ -27,9 +27,13 @@ class NLPOptimizer:
             
             # Adjust pauses based on sentiment
             if sentiment_score < 0.3:  # Negative sentiment
-                line.pause_after = max(1.0, line.pause_after)
+                line.pause_after = 1.0
             elif sentiment_score > 0.7:  # Positive sentiment
-                line.pause_after = min(0.3, line.pause_after)
+                line.pause_after = 0.3
+            
+            # For greetings and positive interactions, use shorter pauses
+            if any(word in line.text.lower() for word in {'hello', 'hi', 'hey', 'good'}):
+                line.pause_after = 0.3
             
             # Check coherence with previous line if not first line
             if i > 0:
