@@ -1,8 +1,9 @@
 import pytest
-from unittest.mock import Mock, patch, AsyncMock
+from unittest.mock import Mock, patch, AsyncMock, call
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.common.exceptions import TimeoutException
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
 from app.services.twitter_browser_service import TwitterBrowserService
 
 @pytest.fixture
@@ -53,6 +54,59 @@ async def test_login_failure(browser_service):
     browser_service.login.side_effect = lambda *args: False
     success = await browser_service.login("test_user", "test_pass")
     assert success == False
+
+@pytest.mark.asyncio
+async def test_captcha_handling(browser_service):
+    """Test CAPTCHA detection and handling."""
+    mock_driver = Mock()
+    mock_element = Mock()
+    mock_element.is_displayed.return_value = True
+    
+    # Mock WebDriverWait and until
+    mock_wait = Mock()
+    mock_wait.until.return_value = mock_element
+    mock_wait.until_not.side_effect = TimeoutException()
+    
+    with patch('selenium.webdriver.Chrome', return_value=mock_driver), \
+         patch('selenium.webdriver.support.ui.WebDriverWait', return_value=mock_wait), \
+         patch('app.services.twitter_browser_service.logger') as mock_logger:
+        
+        # Set up browser service
+        browser_service.driver = mock_driver
+        
+        # Test CAPTCHA detection
+        result = await browser_service._handle_captcha(timeout=5)
+        assert result == False  # Should fail due to timeout
+        
+        # Verify logging
+        mock_logger.warning.assert_any_call("CAPTCHA detected - requires manual intervention")
+        mock_logger.error.assert_any_call("CAPTCHA not completed within timeout")
+
+@pytest.mark.asyncio
+async def test_captcha_success(browser_service):
+    """Test successful CAPTCHA completion."""
+    mock_driver = Mock()
+    mock_element = Mock()
+    mock_element.is_displayed.return_value = True
+    
+    # Mock WebDriverWait and until
+    mock_wait = Mock()
+    mock_wait.until.return_value = mock_element
+    mock_wait.until_not.return_value = True  # CAPTCHA completed
+    
+    with patch('selenium.webdriver.Chrome', return_value=mock_driver), \
+         patch('selenium.webdriver.support.ui.WebDriverWait', return_value=mock_wait), \
+         patch('app.services.twitter_browser_service.logger') as mock_logger:
+        
+        # Set up browser service
+        browser_service.driver = mock_driver
+        
+        # Test CAPTCHA handling
+        result = await browser_service._handle_captcha(timeout=5)
+        assert result == True
+        
+        # Verify logging
+        mock_logger.info.assert_any_call("CAPTCHA appears to be completed")
 
 @pytest.mark.asyncio
 async def test_create_space_success(browser_service):

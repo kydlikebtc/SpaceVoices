@@ -33,6 +33,9 @@ class TwitterBrowserService:
         self._temp_dir: Optional[str] = None
         self._session_id: Optional[str] = None
         self._debug_port: Optional[int] = None
+        self._proxy_config: Optional[Dict[str, str]] = None
+        self._session_duration: int = int(os.getenv('BROWSER_SESSION_DURATION', '3600'))  # 1 hour default
+        self._session_start_time: Optional[float] = None
     
     async def _cleanup_chrome_processes(self):
         """Clean up any existing Chrome processes."""
@@ -197,15 +200,47 @@ class TwitterBrowserService:
         
         return options
 
+    def _should_rotate_session(self) -> bool:
+        """Check if the current session should be rotated."""
+        if self._session_start_time is None:
+            return True
+        return time.time() - self._session_start_time >= self._session_duration
+
+    def _configure_proxy(self) -> None:
+        """Configure proxy settings if enabled."""
+        if os.getenv('BROWSER_USE_PROXY', 'false').lower() == 'true':
+            self._proxy_config = {
+                'host': os.getenv('BROWSER_PROXY_HOST', ''),
+                'port': os.getenv('BROWSER_PROXY_PORT', ''),
+                'username': os.getenv('BROWSER_PROXY_USERNAME', ''),
+                'password': os.getenv('BROWSER_PROXY_PASSWORD', '')
+            }
+            
+            if all(self._proxy_config.values()):
+                logger.info("Proxy configuration loaded")
+            else:
+                logger.warning("Incomplete proxy configuration - proceeding without proxy")
+                self._proxy_config = None
+        else:
+            self._proxy_config = None
+
     async def setup_browser(self) -> None:
         """Set up the browser with proper configuration."""
         logger.info("Setting up browser...")
+        
+        # Check if we need to rotate session
+        if self._should_rotate_session():
+            logger.info("Rotating browser session...")
+            await self.cleanup()
         
         # Generate unique session ID
         timestamp = str(int(time.time()))
         pid = os.getpid()
         rand_suffix = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=8))
         self._session_id = f"{timestamp}_{pid}_{rand_suffix}"
+        
+        # Configure proxy if enabled
+        self._configure_proxy()
         
         # Clean up any existing Chrome processes
         await self._cleanup_chrome_processes()
@@ -218,8 +253,17 @@ class TwitterBrowserService:
         # Configure Chrome options
         options = self._configure_chrome_options()
         
+        # Add proxy configuration if enabled
+        if self._proxy_config is not None:
+            proxy_url = f"http://{self._proxy_config['username']}:{self._proxy_config['password']}@{self._proxy_config['host']}:{self._proxy_config['port']}"
+            options.add_argument(f'--proxy-server={proxy_url}')
+            logger.info("Added proxy configuration to Chrome options")
+        
         # Set up Chrome service with webdriver_manager
         service = Service(ChromeDriverManager().install())
+        
+        # Track session start time
+        self._session_start_time = time.time()
         
         # Initialize driver with retry
         max_retries = 3
@@ -1252,23 +1296,24 @@ class TwitterBrowserService:
     
     def cleanup(self) -> None:
         """Clean up browser resources."""
-        try:
-            if self.driver is not None:
+        # Clean up browser resources
+        if self.driver is not None:
+            try:
+                # Get all window handles and close them
                 try:
-                    # Get all window handles and close them
                     for handle in self.driver.window_handles:
                         self.driver.switch_to.window(handle)
                         self.driver.close()
                 except Exception:
                     pass
                 
+                # Quit the driver
                 try:
-                    # Quit the driver
                     self.driver.quit()
                 except Exception as e:
                     logger.error(f"Error quitting driver: {str(e)}")
-                finally:
-                    self.driver = None
+            finally:
+                self.driver = None
         
         # Kill any remaining chrome processes for this session
         if hasattr(self, '_session_id'):
