@@ -896,9 +896,10 @@ class TwitterBrowserService:
                 # Wait for navigation and verify login with retry
                 max_verify_attempts = 3
                 for verify_attempt in range(max_verify_attempts):
+                    logger.info(f"Verification attempt {verify_attempt + 1}/{max_verify_attempts}")
+                    # Wait for URL change with increased timeout
+                    logger.info("Waiting for navigation away from login page...")
                     try:
-                        # Wait for URL change with increased timeout
-                        logger.info("Waiting for navigation away from login page...")
                         WebDriverWait(self.driver, 15).until(
                             lambda driver: 'flow/login' not in driver.current_url.lower()
                         )
