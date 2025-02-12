@@ -68,13 +68,15 @@ async def test_handle_space_events(mock_websocket, monkeypatch):
     
     monkeypatch.setattr("app.api.websockets.TwitterSpacesService", MockTwitterService)
     
-    # Test successful connection
-    space_id = "test_space_123"
-    mock_websocket.receive_text.side_effect = WebSocketDisconnect()
-    
-    await handle_space_events(space_id, mock_websocket)
-    
-    # Verify WebSocket was accepted and monitoring started
-    mock_websocket.accept.assert_called_once()
-    mock_interaction.start_monitoring.assert_called_once_with(space_id)
-    mock_interaction.stop_monitoring.assert_called_once_with(space_id)
+    # Mock heartbeat to avoid infinite loop
+    with patch.object(SpaceEventManager, '_start_heartbeat', AsyncMock()) as mock_heartbeat:
+        # Test successful connection
+        space_id = "test_space_123"
+        mock_websocket.receive_text.side_effect = WebSocketDisconnect()
+        
+        await handle_space_events(space_id, mock_websocket)
+        
+        # Verify WebSocket was accepted and monitoring started
+        mock_websocket.accept.assert_called_once()
+        mock_interaction.start_monitoring.assert_called_once_with(space_id)
+        mock_interaction.stop_monitoring.assert_called_once_with(space_id)
