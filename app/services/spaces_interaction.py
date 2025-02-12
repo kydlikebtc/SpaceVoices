@@ -93,6 +93,9 @@ class SpacesInteractionService:
         handlers = self.event_handlers.get(event.type, [])
         for handler in handlers:
             try:
-                await asyncio.to_thread(handler, event)
+                if asyncio.iscoroutinefunction(handler):
+                    await handler(event)
+                else:
+                    await asyncio.to_thread(handler, event)
             except Exception as e:
                 logger.error(f"Error in event handler: {str(e)}")
