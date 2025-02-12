@@ -55,11 +55,11 @@ class TwitterSpacesService:
             ai_disclosure = "[AI-GENERATED CONTENT] This Space features AI-generated voices and content."
             full_description = f"{ai_disclosure}\n\n{description}" if description else ai_disclosure
             
-            # Create the Space
-            space = client.create_space(
-                title=title,
-                scheduled_start=scheduled_start,
-                topic_ids=None
+            # Create the Space using create_tweet endpoint
+            space = client.create_tweet(
+                text=title,
+                card_uri="twitter://spaces",
+                scheduled_start=scheduled_start
             )
             
             if not space.data:

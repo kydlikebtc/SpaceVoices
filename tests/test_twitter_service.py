@@ -13,7 +13,11 @@ def mock_account_manager():
     mock_client = Mock(spec=tweepy.Client)
     mock_space = Mock()
     mock_space.data = {"id": "test_space_123"}
-    mock_client.create_space.return_value = mock_space
+    
+    # Add required methods to mock client
+    mock_client.create_tweet = Mock(return_value=mock_space)  # Twitter API uses create_tweet for spaces
+    mock_client.get_space = Mock(return_value=mock_space)
+    mock_client.get_tweets = Mock(return_value=mock_space)
     
     def get_client(character):
         if character in ["Host", "Alice"]:
