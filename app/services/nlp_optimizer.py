@@ -7,7 +7,8 @@ class NLPOptimizer:
     
     def __init__(self):
         """Initialize NLP optimizer."""
-        pass
+        from app.services.resource_manager import ResourceManager
+        self.resource_manager = ResourceManager()
     
     async def optimize_dialogue(self, lines: List[DialogueLine]) -> List[DialogueLine]:
         """
@@ -18,7 +19,14 @@ class NLPOptimizer:
             
         Returns:
             Optimized list of dialogue lines with adjusted pauses
+            
+        Raises:
+            ResourceError: If system resources are exceeded
         """
+        # Check system resources before processing
+        if not await self.resource_manager.check_resources("nlp_optimization"):
+            from app.services.resource_manager import ResourceError
+            raise ResourceError("System resources exceeded limits for NLP optimization")
         optimized_lines = []
         
         for i, line in enumerate(lines):
