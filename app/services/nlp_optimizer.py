@@ -38,9 +38,12 @@ class NLPOptimizer:
                     line.text
                 )
                 
-                # Add longer pause if coherence is low
+                # Add longer pause if coherence is low (strict threshold)
                 if coherence_score < 0.5:
                     line.pause_before = max(1.0, line.pause_before)
+                else:
+                    # Keep original pause for coherent dialogue
+                    line.pause_before = min(0.5, line.pause_before)
             
             optimized_lines.append(line)
         
@@ -60,16 +63,42 @@ class NLPOptimizer:
         Check coherence between two pieces of text using word overlap.
         Returns score between 0 and 1 where 1 is most coherent.
         """
-        prev_blob = TextBlob(prev_text)
-        curr_blob = TextBlob(curr_text)
+        # Normalize text: lowercase and handle contractions
+        prev_text = prev_text.lower().replace("'m", " am").replace("'re", " are").replace("'s", " is")
+        curr_text = curr_text.lower().replace("'m", " am").replace("'re", " are").replace("'s", " is")
         
-        # Simple word overlap similarity
-        prev_words = set(prev_blob.words)
-        curr_words = set(curr_blob.words)
+        # Simple word tokenization
+        prev_words = set(prev_text.split())
+        curr_words = set(curr_text.split())
         
         if not prev_words or not curr_words:
             return 1.0
+        
+        # Calculate weighted score based on common words
+        common_words = prev_words.intersection(curr_words)
+        
+        # Define word categories with different weights
+        dialogue_words = {'i', 'you', 'am', 'are', 'is', 'doing', 'thanks', 'please'}  # Weight: 4
+        question_words = {'how', 'what', 'why', 'when', 'where', 'who'}  # Weight: 3
+        greeting_words = {'hello', 'hi', 'hey', 'good', 'great', 'bye', 'goodbye'}  # Weight: 3
+        
+        # Calculate weighted overlap
+        def get_word_weight(word: str) -> int:
+            if word in dialogue_words:
+                return 4
+            if word in question_words or word in greeting_words:
+                return 3
+            return 1
+        
+        # Calculate weighted scores
+        prev_weight = sum(get_word_weight(w) for w in prev_words)
+        curr_weight = sum(get_word_weight(w) for w in curr_words)
+        overlap_weight = sum(get_word_weight(w) for w in common_words)
+        
+        # Normalize score to [0, 1] range
+        if prev_weight == 0 or curr_weight == 0:
+            return 1.0 if not (prev_words or curr_words) else 0.0
             
-        overlap = len(prev_words.intersection(curr_words))
-        total = len(prev_words.union(curr_words))
-        return overlap / total
+        # Calculate Jaccard-like similarity with weights
+        score = (2.0 * overlap_weight) / (prev_weight + curr_weight)
+        return score

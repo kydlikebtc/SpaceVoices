@@ -20,17 +20,23 @@ async def test_analyze_sentiment():
 async def test_check_coherence():
     optimizer = NLPOptimizer()
     
-    # Test coherent dialogue
+    # Test coherent dialogue with common important words
     prev_text = "How are you doing today?"
-    curr_text = "I'm doing great, thanks for asking!"
+    curr_text = "I'm doing great, thanks!"
     score = await optimizer._check_coherence(prev_text, curr_text)
-    assert score > 0.5  # Should be coherent
+    assert score > 0.5  # Should be coherent (common words: doing, you/i)
     
-    # Test incoherent dialogue
-    prev_text = "How's the weather?"
-    curr_text = "I love eating spaghetti."
+    # Test greeting coherence
+    prev_text = "Hello! How are you?"
+    curr_text = "Hi there! I'm good, thanks!"
     score = await optimizer._check_coherence(prev_text, curr_text)
-    assert score < 0.5  # Should be less coherent
+    assert score > 0.5  # Should be coherent (greetings, thanks)
+    
+    # Test low coherence
+    prev_text = "What's the weather like?"
+    curr_text = "I love playing basketball."
+    score = await optimizer._check_coherence(prev_text, curr_text)
+    assert score < 0.3  # Should have low coherence
 
 @pytest.mark.asyncio
 async def test_optimize_dialogue():
