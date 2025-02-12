@@ -1,6 +1,6 @@
 import pytest
 from fastapi.testclient import TestClient
-from fastapi.websockets import WebSocket
+from fastapi.websockets import WebSocket, WebSocketDisconnect
 from unittest.mock import Mock, AsyncMock
 import json
 from app.main import app
@@ -44,15 +44,31 @@ async def test_space_event_manager():
     assert space_id not in manager.active_connections
 
 @pytest.mark.asyncio
-async def test_handle_space_events(mock_websocket):
+async def test_handle_space_events(mock_websocket, monkeypatch):
     from app.api.websockets import handle_space_events
+    from app.services.twitter_service import TwitterSpacesService
+    from app.services.spaces_interaction import SpacesInteractionService
+    
+    # Mock TwitterSpacesService
+    mock_service = Mock(spec=TwitterSpacesService)
+    mock_interaction = Mock(spec=SpacesInteractionService)
+    mock_interaction.start_monitoring = AsyncMock()
+    mock_interaction.stop_monitoring = AsyncMock()
+    mock_interaction.register_handler = Mock()
+    
+    mock_service.interaction_services = {"Host": mock_interaction}
+    
+    def mock_init():
+        return mock_service
+    monkeypatch.setattr(TwitterSpacesService, "__new__", mock_init)
     
     # Test successful connection
     space_id = "test_space_123"
-    mock_websocket.receive_text.side_effect = ["message", Exception("WebSocket disconnected")]
+    mock_websocket.receive_text.side_effect = WebSocketDisconnect()
     
-    with pytest.raises(Exception, match="WebSocket disconnected"):
-        await handle_space_events(space_id, mock_websocket)
+    await handle_space_events(space_id, mock_websocket)
     
-    # Verify WebSocket was accepted
+    # Verify WebSocket was accepted and monitoring started
     mock_websocket.accept.assert_called_once()
+    mock_interaction.start_monitoring.assert_called_once_with(space_id)
+    mock_interaction.stop_monitoring.assert_called_once_with(space_id)
