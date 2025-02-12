@@ -1,4 +1,4 @@
-from typing import Optional, Dict
+from typing import Optional, Dict, cast, NoReturn
 import logging
 import time
 import asyncio
@@ -10,12 +10,16 @@ import json
 import tempfile
 from pathlib import Path
 from selenium import webdriver
+from selenium.webdriver.chrome.webdriver import WebDriver
 from selenium.webdriver.chrome.service import Service
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.common.by import By
+from selenium.webdriver.common.keys import Keys
+from selenium.webdriver.remote.webelement import WebElement
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from selenium.common.exceptions import TimeoutException, WebDriverException, NoSuchWindowException
+import math
 from webdriver_manager.chrome import ChromeDriverManager
 from app.services.feature_flags import FeatureFlags
 
@@ -27,11 +31,17 @@ class TwitterBrowserService:
     def __init__(self):
         """Initialize the browser service."""
         self.feature_flags = FeatureFlags()
-        self.driver = None
+        self.driver: Optional[webdriver.Chrome] = None
         self.credentials: Dict[str, str] = {}
-        self._temp_dir = None
-        self._session_id = None
-        self._debug_port = None
+        self._temp_dir: str = ""  # Empty string as default, will be set in _create_temp_directory
+        self._session_id: str = ""  # Empty string as default
+        self._debug_port: Optional[int] = None
+        self._proxy_config: Optional[Dict[str, str]] = None
+        self._backoff_delay: float = 5.0  # Initial backoff delay in seconds
+        self._max_backoff_delay: float = 60.0  # Maximum backoff delay
+        self._max_retries: int = int(os.getenv('BROWSER_MAX_RETRIES', '3'))  # Max retry attempts
+        self._session_duration: int = int(os.getenv('BROWSER_SESSION_DURATION', '3600'))  # 1 hour default
+        self._session_start_time: Optional[float] = None
     
     async def _cleanup_chrome_processes(self):
         """Clean up any existing Chrome processes."""
@@ -60,7 +70,7 @@ class TwitterBrowserService:
         except Exception as e:
             logger.error(f"Error cleaning up Chrome processes: {e}")
 
-    async def _create_temp_directory(self):
+    async def _create_temp_directory(self) -> None:
         """Create a temporary directory for Chrome profile."""
         try:
             # Generate unique session directory
@@ -70,11 +80,15 @@ class TwitterBrowserService:
             session_dir = f'chrome_session_{timestamp}_{pid}_{rand_suffix}'
             
             # Create temporary directory in /tmp
-            self._temp_dir = tempfile.mkdtemp(prefix=session_dir)
-            os.chmod(self._temp_dir, 0o700)
+            temp_dir = tempfile.mkdtemp(prefix=session_dir)
+            if not temp_dir:
+                raise RuntimeError("Failed to create temporary directory")
+            
+            os.chmod(temp_dir, 0o700)
+            self._temp_dir: str = temp_dir  # Type annotation to ensure it's always str
             
             # Create minimal directory structure
-            default_dir = os.path.join(self._temp_dir, 'Default')
+            default_dir = os.path.join(temp_dir, 'Default')
             os.makedirs(default_dir, mode=0o700)
             
             # Create preferences file
@@ -114,40 +128,55 @@ class TwitterBrowserService:
         """Configure Chrome options with enhanced anti-detection."""
         options = Options()
         
-        # Core settings
+        # Core settings with improved stability
         options.add_argument('--no-sandbox')
         options.add_argument('--headless=new')
         options.add_argument('--disable-gpu')
         options.add_argument('--disable-dev-shm-usage')
+        options.add_argument('--disable-crash-reporter')
+        options.add_argument('--disable-in-process-stack-traces')
+        options.add_argument('--disable-logging')
         
-        # Random window size for more human-like appearance
+        # Enhanced window and viewport settings
         width = random.randint(1024, 1920)
         height = random.randint(768, 1080)
+        scale_factor = round(random.uniform(1.0, 2.0), 2)
         options.add_argument(f'--window-size={width},{height}')
+        options.add_argument(f'--force-device-scale-factor={scale_factor}')
         
-        # Profile and data directory
+        # Profile and data directory with enhanced privacy
         options.add_argument(f'--user-data-dir={self._temp_dir}')
+        options.add_argument('--disable-sync')
+        options.add_argument('--disable-encryption')
+        options.add_argument('--disable-features=UserAgentClientHint')
         
-        # Performance and stability
+        # Performance and stability improvements
         options.add_argument('--disable-background-networking')
         options.add_argument('--disable-background-timer-throttling')
-        options.add_argument('--disable-extensions')
-        options.add_argument('--disable-sync')
-        options.add_argument('--disable-translate')
+        options.add_argument('--disable-backgrounding-occluded-windows')
+        options.add_argument('--disable-breakpad')
+        options.add_argument('--disable-component-extensions-with-background-pages')
+        options.add_argument('--disable-features=TranslateUI,BlinkGenPropertyTrees')
+        options.add_argument('--disable-ipc-flooding-protection')
         
-        # Enhanced anti-detection
+        # Enhanced anti-detection measures
         options.add_argument('--disable-blink-features=AutomationControlled')
-        options.add_argument('--disable-features=IsolateOrigins,site-per-process')
+        options.add_argument('--disable-features=IsolateOrigins,site-per-process,SitePerProcess')
         options.add_argument('--disable-site-isolation-trials')
+        options.add_argument('--disable-web-security')
+        options.add_argument('--allow-running-insecure-content')
         
-        # Random user agent
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0'
-        ]
-        options.add_argument(f'--user-agent={random.choice(user_agents)}')
+        # Randomized user agent with consistent platform
+        platforms = ['Windows NT 10.0', 'Macintosh; Intel Mac OS X 10_15_7']
+        selected_platform = random.choice(platforms)
+        chrome_version = f"{random.randint(100, 121)}.0.{random.randint(0, 9999)}.{random.randint(0, 99)}"
+        
+        if 'Windows' in selected_platform:
+            user_agent = f'Mozilla/5.0 ({selected_platform}; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36'
+        else:
+            user_agent = f'Mozilla/5.0 ({selected_platform}) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36'
+            
+        options.add_argument(f'--user-agent={user_agent}')
         
         # Enhanced preferences
         prefs = {
@@ -177,9 +206,38 @@ class TwitterBrowserService:
         
         return options
 
-    async def setup_browser(self):
+    def _should_rotate_session(self) -> bool:
+        """Check if the current session should be rotated."""
+        if self._session_start_time is None:
+            return True
+        return time.time() - self._session_start_time >= self._session_duration
+
+    def _configure_proxy(self) -> None:
+        """Configure proxy settings if enabled."""
+        if os.getenv('BROWSER_USE_PROXY', 'false').lower() == 'true':
+            self._proxy_config = {
+                'host': os.getenv('BROWSER_PROXY_HOST', ''),
+                'port': os.getenv('BROWSER_PROXY_PORT', ''),
+                'username': os.getenv('BROWSER_PROXY_USERNAME', ''),
+                'password': os.getenv('BROWSER_PROXY_PASSWORD', '')
+            }
+            
+            if all(self._proxy_config.values()):
+                logger.info("Proxy configuration loaded")
+            else:
+                logger.warning("Incomplete proxy configuration - proceeding without proxy")
+                self._proxy_config = None
+        else:
+            self._proxy_config = None
+
+    async def setup_browser(self) -> None:
         """Set up the browser with proper configuration."""
         logger.info("Setting up browser...")
+        
+        # Check if we need to rotate session
+        if self._should_rotate_session():
+            logger.info("Rotating browser session...")
+            self.cleanup()  # Not async, just calls synchronous methods
         
         # Generate unique session ID
         timestamp = str(int(time.time()))
@@ -187,37 +245,58 @@ class TwitterBrowserService:
         rand_suffix = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=8))
         self._session_id = f"{timestamp}_{pid}_{rand_suffix}"
         
+        # Configure proxy if enabled
+        self._configure_proxy()
+        
+        # Reset backoff for fresh setup
+        self._reset_backoff()
+        
         # Clean up any existing Chrome processes
         await self._cleanup_chrome_processes()
         
         # Create temporary directory
         await self._create_temp_directory()
+        if self._temp_dir is None:
+            raise RuntimeError("Failed to create temporary directory")
         
         # Configure Chrome options
         options = self._configure_chrome_options()
         
+        # Add proxy configuration if enabled
+        if self._proxy_config is not None:
+            proxy_url = f"http://{self._proxy_config['username']}:{self._proxy_config['password']}@{self._proxy_config['host']}:{self._proxy_config['port']}"
+            options.add_argument(f'--proxy-server={proxy_url}')
+            logger.info("Added proxy configuration to Chrome options")
+        
         # Set up Chrome service with webdriver_manager
         service = Service(ChromeDriverManager().install())
         
+        # Track session start time
+        self._session_start_time = time.time()
+        
         # Initialize driver with retry
-        max_retries = 3
-        last_error = None
+        max_retries = self._max_retries
+        last_error: Optional[Exception] = None
         
         for attempt in range(max_retries):
             try:
                 # Initialize driver with explicit service
-                self.driver = webdriver.Chrome(service=service, options=options)
+                driver = webdriver.Chrome(service=service, options=options)
                 
                 # Set page load timeout and implicit wait
-                self.driver.set_page_load_timeout(30)
-                self.driver.implicitly_wait(10)
+                driver.set_page_load_timeout(30)
+                driver.implicitly_wait(10)
                 
                 # Test browser is working
-                self.driver.get('about:blank')
+                driver.get('about:blank')
                 await asyncio.sleep(1)
+                
+                # Store driver after successful initialization
+                self.driver = driver
                 
                 # Execute CDP commands to prevent detection
                 stealth_js = """
+                    // Enhanced anti-detection script with comprehensive browser property spoofing
                     // Override webdriver and plugins
                     Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
                     Object.defineProperty(navigator, 'plugins', { 
@@ -254,7 +333,8 @@ class TwitterBrowserService:
                     };
                 """
                 
-                self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                driver = self._get_driver()
+                driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
                     "source": stealth_js
                 })
                 
@@ -267,12 +347,11 @@ class TwitterBrowserService:
                 logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
                 
                 # Cleanup on failure
-                if hasattr(self, 'driver') and self.driver:
+                if driver:
                     try:
-                        self.driver.quit()
-                    except:
+                        driver.quit()
+                    except Exception:
                         pass
-                    self.driver = None
                 
                 # Last attempt
                 if attempt == max_retries - 1:
@@ -280,68 +359,10 @@ class TwitterBrowserService:
                 
                 await asyncio.sleep(2)
         
-        # Create unique temporary directory
-        timestamp = str(int(time.time()))
-        pid = os.getpid()
-        rand_suffix = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=8))
-        self._session_id = f"{timestamp}_{pid}_{rand_suffix}"
-        
-        # Create fresh profile directory
-        self._temp_dir = None
-        data_dir = None
-        
-        # Create unique temporary directory
-        timestamp = str(int(time.time()))
-        pid = os.getpid()
-        rand_suffix = ''.join(random.choices('abcdefghijklmnopqrstuvwxyz', k=8))
-        self._session_id = f"{timestamp}_{pid}_{rand_suffix}"
-        
-        # Create fresh profile directory
-        self._temp_dir = os.path.join('/tmp', f'chrome_tmp_{self._session_id}')
-        
-        # Ensure clean state
-        if os.path.exists(self._temp_dir):
-            try:
-                shutil.rmtree(self._temp_dir)
-                await asyncio.sleep(1)
-            except Exception as e:
-                logger.error(f"Failed to remove directory: {e}")
-                raise
-        
-        # Create minimal directory structure
-        try:
-            # Create base directory with strict permissions
-            os.makedirs(self._temp_dir, mode=0o700)
-            logger.info(f"Created profile directory: {self._temp_dir}")
-            
-            # Set Chrome data directory
-            data_dir = self._temp_dir
-            
-        except Exception as e:
-            logger.error(f"Failed to create directory: {e}")
-            raise
-            
-        logger.info(f"Created Chrome directories in: {self._temp_dir}")
-        
-        logger.info(f"Created Chrome directories in: {self._temp_dir}")
-        
-        options = Options()
-        # Minimal browser configuration
-        options = Options()
-        
-        # Core settings
-        options.add_argument('--no-sandbox')
-        options.add_argument('--disable-dev-shm-usage')
-        options.add_argument('--disable-gpu')
-        options.add_argument('--window-size=1920,1080')
-        
-        # Remote debugging
-        debug_port = random.randint(9222, 9999)
-        options.add_argument(f'--remote-debugging-port={debug_port}')
-        
         # Profile settings
-        options.add_argument(f'--user-data-dir={data_dir}')
-        options.add_argument('--profile-directory=Default')
+        if self._temp_dir:
+            options.add_argument(f'--user-data-dir={self._temp_dir}')
+            options.add_argument('--profile-directory=Default')
         
         # Basic preferences
         prefs = {
@@ -373,41 +394,29 @@ class TwitterBrowserService:
         service = Service()
         
         # Initialize driver with retry
-        max_retries = 3
-        last_error = None
-        
-        # Initialize driver with retry
-        max_retries = 3
-        last_error = None
+        max_retries = self._max_retries
+        last_error: Optional[Exception] = None
         
         for attempt in range(max_retries):
             try:
                 # Kill any existing Chrome processes
-                os.system('pkill -f chrome')
+                await self._cleanup_chrome_processes()
                 await asyncio.sleep(2)
                 
-                # Initialize driver with minimal options
-                self.driver = webdriver.Chrome(options=options)
-                self.driver.implicitly_wait(10)
+                # Initialize driver with explicit service
+                driver = webdriver.Chrome(service=service, options=options)
+                driver.set_page_load_timeout(30)
+                driver.implicitly_wait(10)
                 
                 # Test browser is working
-                self.driver.get('about:blank')
+                driver.get('about:blank')
                 await asyncio.sleep(1)
                 
-                # Execute CDP commands to prevent detection
-                self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                    "source": """
-                        Object.defineProperty(navigator, 'webdriver', {
-                            get: () => undefined
-                        });
-                        Object.defineProperty(navigator, 'plugins', {
-                            get: () => [1, 2, 3, 4, 5]
-                        });
-                        window.chrome = { runtime: {} };
-                    """
-                })
+                # Store driver after successful initialization
+                self.driver = driver
                 
                 # Success
+                logger.info("Successfully initialized Chrome browser")
                 break
                 
             except Exception as e:
@@ -415,22 +424,22 @@ class TwitterBrowserService:
                 logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
                 
                 # Cleanup on failure
-                if hasattr(self, 'driver') and self.driver:
+                if driver:
                     try:
-                        self.driver.quit()
-                    except:
+                        driver.quit()
+                    except Exception:
                         pass
-                    self.driver = None
                 
                 # Last attempt
                 if attempt == max_retries - 1:
-                    raise last_error
+                    raise RuntimeError(f"Failed to initialize browser after {max_retries} attempts: {str(last_error)}")
                 
                 await asyncio.sleep(2)
         
         # Profile and data directory
-        options.add_argument(f'--user-data-dir={data_dir}')
-        options.add_argument('--profile-directory=Default')
+        if self._temp_dir:
+            options.add_argument(f'--user-data-dir={self._temp_dir}')
+            options.add_argument('--profile-directory=Default')
         
         # Performance optimizations
         options.add_argument('--disable-dev-shm-usage')
@@ -596,146 +605,150 @@ class TwitterBrowserService:
             max_retries = 3
             for attempt in range(max_retries):
                 try:
-                    self.driver = webdriver.Chrome(
+                    driver = webdriver.Chrome(
                         service=service,
                         options=options
                     )
-                    self.driver.implicitly_wait(10)
+                    driver.implicitly_wait(10)
                     
                     # Execute CDP commands to prevent detection
                     stealth_js = """
-                        // Override webdriver
-                        Object.defineProperty(navigator, 'webdriver', {
-                            get: () => undefined
-                        });
-                        
-                        // Override plugins
-                        const getPlugins = () => {
-                            const plugins = [
-                                { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer' },
-                                { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai' },
-                                { name: 'Native Client', filename: 'internal-nacl-plugin' }
-                            ];
-                            const pluginArray = Object.create(PluginArray.prototype);
-                            plugins.forEach((plugin, i) => {
-                                const mimeTypes = Object.create(MimeTypeArray.prototype);
-                                Object.defineProperty(pluginArray, i, {
-                                    value: plugin,
-                                    enumerable: true
-                                });
-                                Object.defineProperty(pluginArray, plugin.name, {
-                                    value: plugin,
-                                    enumerable: false
-                                });
-                            });
-                            Object.defineProperty(pluginArray, 'length', {
-                                value: plugins.length,
-                                enumerable: false
-                            });
-                            return pluginArray;
-                        };
-                        Object.defineProperty(navigator, 'plugins', {
-                            get: () => getPlugins()
-                        });
-                        
-                        // Override languages
-                        Object.defineProperty(navigator, 'languages', {
-                            get: () => ['en-US', 'en']
-                        });
-                        
-                        // Override platform
-                        Object.defineProperty(navigator, 'platform', {
-                            get: () => 'Win32'
-                        });
-                        
-                        // Override chrome runtime
-                        window.chrome = {
-                            app: {
-                                isInstalled: false,
-                                InstallState: {
-                                    DISABLED: 'disabled',
-                                    INSTALLED: 'installed',
-                                    NOT_INSTALLED: 'not_installed'
-                                },
-                                RunningState: {
-                                    CANNOT_RUN: 'cannot_run',
-                                    READY_TO_RUN: 'ready_to_run',
-                                    RUNNING: 'running'
-                                }
-                            },
-                            runtime: {
-                                OnInstalledReason: {
-                                    CHROME_UPDATE: 'chrome_update',
-                                    INSTALL: 'install',
-                                    SHARED_MODULE_UPDATE: 'shared_module_update',
-                                    UPDATE: 'update'
-                                },
-                                OnRestartRequiredReason: {
-                                    APP_UPDATE: 'app_update',
-                                    OS_UPDATE: 'os_update',
-                                    PERIODIC: 'periodic'
-                                },
-                                PlatformArch: {
-                                    ARM: 'arm',
-                                    ARM64: 'arm64',
-                                    MIPS: 'mips',
-                                    MIPS64: 'mips64',
-                                    X86_32: 'x86-32',
-                                    X86_64: 'x86-64'
-                                },
-                                PlatformNaclArch: {
-                                    ARM: 'arm',
-                                    MIPS: 'mips',
-                                    MIPS64: 'mips64',
-                                    X86_32: 'x86-32',
-                                    X86_64: 'x86-64'
-                                },
-                                PlatformOs: {
-                                    ANDROID: 'android',
-                                    CROS: 'cros',
-                                    LINUX: 'linux',
-                                    MAC: 'mac',
-                                    OPENBSD: 'openbsd',
-                                    WIN: 'win'
-                                },
-                                RequestUpdateCheckStatus: {
-                                    NO_UPDATE: 'no_update',
-                                    THROTTLED: 'throttled',
-                                    UPDATE_AVAILABLE: 'update_available'
-                                }
-                            }
-                        };
-                        
-                        // Add WebGL support
-                        const getParameter = WebGLRenderingContext.prototype.getParameter;
-                        WebGLRenderingContext.prototype.getParameter = function(parameter) {
-                            const isMobile = navigator.userAgent.includes('Mobile');
+                        // Enhanced anti-detection script
+                        (() => {
+                            // Override webdriver
+                            delete Object.getPrototypeOf(navigator).webdriver;
                             
-                            if (parameter === 37445) {
-                                return 'Intel Inc.';
-                            }
-                            if (parameter === 37446) {
-                                return isMobile ? 'Apple GPU' : 'Intel(R) Iris(TM) Graphics 6100';
+                            // Override plugins with realistic values
+                            const getPlugins = () => {
+                                const plugins = [
+                                    { name: 'Chrome PDF Plugin', filename: 'internal-pdf-viewer', description: 'Portable Document Format' },
+                                    { name: 'Chrome PDF Viewer', filename: 'mhjfbmdgcfjbbpaeojofohoefgiehjai', description: 'Portable Document Format' },
+                                    { name: 'Native Client', filename: 'internal-nacl-plugin', description: 'Native Client Executable' }
+                                ];
+                                
+                                const mimeTypes = {
+                                    'application/pdf': { type: 'application/pdf', suffixes: 'pdf', description: 'Portable Document Format' },
+                                    'application/x-google-chrome-pdf': { type: 'application/x-google-chrome-pdf', suffixes: 'pdf', description: 'Portable Document Format' }
+                                };
+                                
+                                const pluginArray = Object.create(PluginArray.prototype);
+                                const mimeTypeArray = Object.create(MimeTypeArray.prototype);
+                                
+                                // Set up MimeTypeArray
+                                Object.keys(mimeTypes).forEach((mt, i) => {
+                                    const mimeType = Object.create(MimeType.prototype);
+                                    Object.assign(mimeType, mimeTypes[mt]);
+                                    Object.defineProperty(mimeTypeArray, i, { value: mimeType, enumerable: true });
+                                    Object.defineProperty(mimeTypeArray, mimeType.type, { value: mimeType, enumerable: false });
+                                });
+                                
+                                // Set up PluginArray
+                                plugins.forEach((plugin, i) => {
+                                    const pluginInstance = Object.create(Plugin.prototype);
+                                    Object.assign(pluginInstance, plugin);
+                                    Object.defineProperty(pluginArray, i, { value: pluginInstance, enumerable: true });
+                                    Object.defineProperty(pluginArray, plugin.name, { value: pluginInstance, enumerable: false });
+                                });
+                                
+                                return pluginArray;
+                            };
+                            
+                            // Override navigator properties
+                            const navigatorProps = {
+                                languages: ['en-US', 'en'],
+                                platform: Math.random() > 0.5 ? 'Win32' : 'MacIntel',
+                                hardwareConcurrency: Math.floor(Math.random() * 8) + 4,
+                                deviceMemory: [2, 4, 8, 16][Math.floor(Math.random() * 4)],
+                                maxTouchPoints: Math.random() > 0.5 ? 0 : 5,
+                                vendor: 'Google Inc.',
+                                connection: {
+                                    effectiveType: ['4g', '3g'][Math.floor(Math.random() * 2)],
+                                    rtt: Math.floor(Math.random() * 100),
+                                    downlink: Math.floor(Math.random() * 10) + 5,
+                                    saveData: false
+                                }
+                            };
+                            
+                            Object.entries(navigatorProps).forEach(([key, value]) => {
+                                if (typeof value === 'object' && value !== null) {
+                                    Object.defineProperty(navigator, key, {
+                                        get: () => value
+                                    });
+                                } else {
+                                    Object.defineProperty(navigator, key, {
+                                        get: () => value
+                                    });
+                                }
+                            });
+                            
+                            // Enhanced WebGL fingerprint randomization
+                            const originalGetParameter = WebGLRenderingContext.prototype.getParameter;
+                            WebGLRenderingContext.prototype.getParameter = function(parameter) {
+                                // Add noise to color depth
+                                if (parameter === this.ALPHA_BITS) return 8;
+                                if (parameter === this.RED_BITS) return 8;
+                                if (parameter === this.GREEN_BITS) return 8;
+                                if (parameter === this.BLUE_BITS) return 8;
+                                
+                                // Randomize max texture size
+                                if (parameter === this.MAX_TEXTURE_SIZE) return 16384;
+                                if (parameter === this.MAX_VIEWPORT_DIMS) return [16384, 16384];
+                                
+                                // Vendor specific information
+                                if (parameter === 37445) return ['Intel Inc.', 'AMD', 'NVIDIA Corporation'][Math.floor(Math.random() * 3)];
+                                if (parameter === 37446) {
+                                    const gpus = [
+                                        'Intel(R) Iris(TM) Graphics 6100',
+                                        'NVIDIA GeForce RTX 3060',
+                                        'AMD Radeon RX 6700'
+                                    ];
+                                    return gpus[Math.floor(Math.random() * gpus.length)];
+                                }
+                                
+                                return originalGetParameter.apply(this, arguments);
+                            };
+                            
+                            // Add custom error handler to prevent stack trace leaks
+                            window.onerror = function(msg, url, line, col, error) {
+                                if (msg.toLowerCase().includes('script error')) return false;
+                                const suppressErrors = true;
+                                return suppressErrors;
+                            };
+                            
+                            // Override performance API
+                            const timing = performance.timing;
+                            if (timing) {
+                                const loadTimes = {};
+                                const now = Date.now();
+                                loadTimes.navigationStart = now - Math.random() * 1000;
+                                loadTimes.loadEventEnd = now;
+                                Object.keys(timing).forEach(key => {
+                                    Object.defineProperty(timing, key, {
+                                        get: () => loadTimes[key] || now - Math.random() * 100
+                                    });
+                                });
                             }
                             
-                            return getParameter.apply(this, arguments);
-                        };
-                        
-                        // Add touch support
-                        const touchSupport = {
-                            maxTouchPoints: 5,
-                            touchEvent: function() { return true; },
-                            touchStart: function() { return true; }
-                        };
-                        Object.defineProperty(navigator, 'maxTouchPoints', {
-                            get: () => touchSupport.maxTouchPoints
-                        });
+                            // Override Permissions API
+                            const originalQuery = Permissions.prototype.query;
+                            Permissions.prototype.query = function(params) {
+                                return originalQuery.call(this, params)
+                                    .then(result => {
+                                        if (params.name === 'notifications') {
+                                            result.state = 'denied';
+                                        }
+                                        return result;
+                                    });
+                            };
+                        })();
                     """
                     
-                    self.driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
+                    driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
                         "source": stealth_js
                     })
                     
+                    # Store driver after successful initialization
+                    self.driver = driver
                     logger.info("Browser initialized successfully")
                     break
                 except Exception as e:
@@ -754,24 +767,29 @@ class TwitterBrowserService:
             if not self.driver:
                 await self.setup_browser()
             
-            # Navigate to login page with retry
-            max_retries = 3
-            for attempt in range(max_retries):
+            # Navigate to login page with exponential backoff retry
+            self._reset_backoff()  # Reset backoff for fresh login attempt
+            for attempt in range(self._max_retries):
                 try:
-                    logger.info(f"Navigating to login page (attempt {attempt + 1})...")
-                    self.driver.get('https://twitter.com/i/flow/login')
+                    logger.info(f"Navigating to login page (attempt {attempt + 1}/{self._max_retries})...")
+                    driver = self._get_driver()
+                    driver.get('https://twitter.com/i/flow/login')
                     
                     # Wait for page load
-                    WebDriverWait(self.driver, 10).until(
+                    driver = self._get_driver()
+                    WebDriverWait(driver, 10).until(
                         EC.presence_of_element_located((By.TAG_NAME, "body"))
                     )
                     await asyncio.sleep(2)
+                    self._reset_backoff()  # Reset on success
                     break
                 except Exception as e:
-                    if attempt == max_retries - 1:
-                        logger.error(f"Failed to load login page: {str(e)}")
+                    logger.error(f"Failed to load login page (attempt {attempt + 1}): {str(e)}")
+                    if attempt == self._max_retries - 1:
+                        logger.error("Exceeded maximum retry attempts")
                         return False
-                    await asyncio.sleep(2)
+                    logger.info(f"Retrying with backoff delay: {self._backoff_delay}s")
+                    await self._exponential_backoff()
             
             # Fill username with human-like timing
             try:
@@ -781,9 +799,7 @@ class TwitterBrowserService:
                 )
                 logger.info("Found username input, typing...")
                 username_input.clear()
-                for char in username:
-                    username_input.send_keys(char)
-                    await asyncio.sleep(random.uniform(0.1, 0.3))
+                await self._type_like_human(username_input, username)
                 
                 # Click next with JavaScript
                 logger.info("Looking for next button...")
@@ -792,27 +808,85 @@ class TwitterBrowserService:
                 )
                 logger.info("Found next button, clicking...")
                 
-                # Move mouse to button with random offset
+                # Simulate natural mouse movement with acceleration/deceleration
                 button_size = next_button.size
-                offset_x = random.randint(5, button_size['width'] - 5)
-                offset_y = random.randint(5, button_size['height'] - 5)
+                button_location = next_button.location
                 
-                self.driver.execute_script(f"""
+                # Calculate start and end positions
+                start_x = random.randint(0, button_location['x'])
+                start_y = random.randint(0, button_location['y'])
+                end_x = button_location['x'] + random.randint(5, button_size['width'] - 5)
+                end_y = button_location['y'] + random.randint(5, button_size['height'] - 5)
+                
+                # Generate smooth movement path with acceleration
+                steps = random.randint(5, 10)
+                for i in range(steps):
+                    # Use easing function for smooth acceleration/deceleration
+                    progress = i / (steps - 1)
+                    ease = 0.5 - math.cos(progress * math.pi) / 2
+                    
+                    current_x = start_x + (end_x - start_x) * ease
+                    current_y = start_y + (end_y - start_y) * ease
+                    
+                    # Add slight random deviation for more natural movement
+                    current_x += random.uniform(-2, 2)
+                    current_y += random.uniform(-2, 2)
+                    
+                    # Dispatch mousemove event
+                    driver = self._get_driver()
+                    driver.execute_script(f"""
+                        document.dispatchEvent(new MouseEvent('mousemove', {{
+                            bubbles: true,
+                            cancelable: true,
+                            view: window,
+                            clientX: {current_x},
+                            clientY: {current_y}
+                        }}));
+                    """)
+                    await asyncio.sleep(random.uniform(0.01, 0.03))
+                
+                # Hover over button
+                driver = self._get_driver()
+                driver.execute_script(f"""
                     arguments[0].dispatchEvent(new MouseEvent('mouseover', {{
-                        'view': window,
-                        'bubbles': true,
-                        'cancelable': true,
-                        'clientX': arguments[1],
-                        'clientY': arguments[2]
+                        view: window,
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: {end_x},
+                        clientY: {end_y}
                     }}));
-                """, next_button, offset_x, offset_y)
+                """, next_button)
+                
+                # Random pause before click
                 await asyncio.sleep(random.uniform(0.2, 0.5))
-                self.driver.execute_script("arguments[0].click();", next_button)
+                
+                # Click with slight position variation
+                click_x = end_x + random.uniform(-1, 1)
+                click_y = end_y + random.uniform(-1, 1)
+                driver = self._get_driver()
+                driver.execute_script(f"""
+                    arguments[0].dispatchEvent(new MouseEvent('mousedown', {{
+                        view: window,
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: {click_x},
+                        clientY: {click_y}
+                    }}));
+                    arguments[0].dispatchEvent(new MouseEvent('mouseup', {{
+                        view: window,
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: {click_x},
+                        clientY: {click_y}
+                    }}));
+                    arguments[0].click();
+                """, next_button)
                 await asyncio.sleep(2)
             except TimeoutException:
                 logger.error("Timeout waiting for username input or next button")
-                logger.error(f"Current URL: {self.driver.current_url}")
-                logger.error(f"Page source: {self.driver.page_source[:1000]}")
+                driver = self._get_driver()
+                logger.error(f"Current URL: {driver.current_url}")
+                logger.error(f"Page source: {driver.page_source[:1000]}")
                 return False
             except Exception as e:
                 logger.error(f"Error during username entry: {str(e)}")
@@ -826,11 +900,7 @@ class TwitterBrowserService:
                 )
                 logger.info("Found password input, typing...")
                 password_input.clear()
-                
-                # Add random delays between keystrokes
-                for char in password:
-                    password_input.send_keys(char)
-                    await asyncio.sleep(random.uniform(0.1, 0.4))
+                await self._type_like_human(password_input, password)
                 
                 # Random pause after password entry
                 await asyncio.sleep(random.uniform(0.5, 1.0))
@@ -851,7 +921,8 @@ class TwitterBrowserService:
                 click_y = button_location['y'] + random.randint(5, button_size['height'] - 5)
                 
                 # Simulate realistic mouse movement and click
-                self.driver.execute_script(f"""
+                driver = self._get_driver()
+                driver.execute_script(f"""
                     // Create mousemove event
                     const moveEvent = new MouseEvent('mousemove', {{
                         bubbles: true,
@@ -879,14 +950,19 @@ class TwitterBrowserService:
                 await asyncio.sleep(random.uniform(0.3, 0.7))
                 
                 # Click the button
-                self.driver.execute_script("arguments[0].click();", login_button)
+                driver = self._get_driver()
+                driver.execute_script("arguments[0].click();", login_button)
                 
                 # Random pause after click
                 await asyncio.sleep(random.uniform(2.0, 4.0))
                 
             except TimeoutException:
                 logger.error("Timeout waiting for password input or login button")
-                logger.error(f"Current URL: {self.driver.current_url}")
+                try:
+                    driver = self._get_driver()
+                    logger.error(f"Current URL: {driver.current_url}")
+                except RuntimeError:
+                    logger.error("Browser driver not initialized")
                 return False
             except Exception as e:
                 logger.error(f"Error during password entry and login: {str(e)}")
@@ -914,10 +990,16 @@ class TwitterBrowserService:
                             continue
                         return False
                         
-                        # Check for verification/error pages
+                        # Check for verification/error/CAPTCHA pages
                         current_url = self.driver.current_url.lower()
-                        if any(x in current_url for x in ['challenge', 'verify', 'error']):
-                            logger.error(f"Hit verification/error page: {current_url}")
+                        if any(x in current_url for x in ['challenge', 'verify', 'error', 'captcha']):
+                            logger.warning(f"Hit verification/CAPTCHA page: {current_url}")
+                            
+                            # Handle potential CAPTCHA
+                            if await self._handle_captcha():
+                                logger.info("CAPTCHA handled successfully")
+                                continue
+                            
                             if verify_attempt < max_verify_attempts - 1:
                                 logger.info("Retrying verification...")
                                 await asyncio.sleep(2)
@@ -942,9 +1024,15 @@ class TwitterBrowserService:
                             "div[data-testid='sidebarColumn']"
                         ]
                 
-                for selector in success_indicators:
+                login_indicators = [
+                    "div[data-testid='sidebarColumn']",
+                    "div[data-testid='primaryColumn']",
+                    "header[role='banner']"
+                ]
+                for selector in login_indicators:
                     try:
-                        element = WebDriverWait(self.driver, 10).until(
+                        driver = self._get_driver()
+                        element = WebDriverWait(driver, 10).until(
                             EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                         )
                         if element.is_displayed():
@@ -956,7 +1044,11 @@ class TwitterBrowserService:
                 
                 # If we get here, no success indicators were found
                 logger.error("Could not verify login success")
-                logger.error(f"Current URL: {self.driver.current_url}")
+                try:
+                    driver = self._get_driver()
+                    logger.error(f"Current URL: {driver.current_url}")
+                except RuntimeError:
+                    logger.error("Browser driver not initialized")
                 return False
                 
             except TimeoutException:
@@ -987,14 +1079,134 @@ class TwitterBrowserService:
             logger.error(f"Login failed: {str(e)}")
             if hasattr(self, 'driver') and self.driver:
                 logger.error(f"Current URL: {self.driver.current_url}")
-                logger.error(f"Current title: {self.driver.title}")
+                driver = self._get_driver()
+                logger.error(f"Current title: {driver.title}")
             return False
     
+    def _get_driver(self) -> webdriver.Chrome:
+        """Get the current driver or raise an exception."""
+        if not isinstance(self.driver, webdriver.Chrome):
+            raise RuntimeError("Browser driver is not initialized")
+        return cast(webdriver.Chrome, self.driver)
+        
+    async def _exponential_backoff(self) -> None:
+        """Execute exponential backoff delay."""
+        await asyncio.sleep(self._backoff_delay)
+        self._backoff_delay = min(self._backoff_delay * 2, self._max_backoff_delay)
+        
+    def _reset_backoff(self) -> None:
+        """Reset backoff delay to initial value."""
+        self._backoff_delay = 5.0
+        
+    async def _type_like_human(self, element: WebElement, text: str) -> None:
+        """
+        Type text with human-like patterns including occasional typos and corrections.
+        
+        Args:
+            element: WebDriver element to type into
+            text: Text to type
+        """
+        nearby_keys = {
+            'a': ['s', 'q', 'z'], 's': ['a', 'd', 'w'], 'd': ['s', 'f', 'e'],
+            'f': ['d', 'g', 'r'], 'g': ['f', 'h', 't'], 'h': ['g', 'j', 'y'],
+            'j': ['h', 'k', 'u'], 'k': ['j', 'l', 'i'], 'l': ['k', ';', 'o'],
+            'q': ['w', 'a', '1'], 'w': ['q', 'e', 's'], 'e': ['w', 'r', 'd'],
+            'r': ['e', 't', 'f'], 't': ['r', 'y', 'g'], 'y': ['t', 'u', 'h'],
+            'u': ['y', 'i', 'j'], 'i': ['u', 'o', 'k'], 'o': ['i', 'p', 'l'],
+            'p': ['o', '[', ';'], '@': ['2', '#', '!'], '.': [',', '/', ';']
+        }
+        
+        for char in text:
+            # Occasional typo (5% chance)
+            if char.lower() in nearby_keys and random.random() < 0.05:
+                typo = random.choice(nearby_keys[char.lower()])
+                element.send_keys(typo)
+                await asyncio.sleep(random.uniform(0.1, 0.3))
+                
+                # Correct the typo
+                element.send_keys(Keys.BACKSPACE)
+                await asyncio.sleep(random.uniform(0.1, 0.2))
+                element.send_keys(char)
+            else:
+                # Normal typing with variable speed
+                typing_speed = random.uniform(0.1, 0.3)
+                # Slow down for shift key if uppercase
+                if char.isupper():
+                    element.send_keys(Keys.SHIFT)
+                    await asyncio.sleep(random.uniform(0.1, 0.2))
+                element.send_keys(char)
+            
+            # Variable delay between keystrokes
+            await asyncio.sleep(typing_speed)
+            
+            # Occasional pause while typing (2% chance)
+            if random.random() < 0.02:
+                await asyncio.sleep(random.uniform(0.5, 1.0))
+        
+    async def _handle_captcha(self, timeout: int = 300) -> bool:
+        """
+        Handle CAPTCHA detection and manual solving.
+        
+        Args:
+            timeout: Maximum time to wait for CAPTCHA completion in seconds
+            
+        Returns:
+            bool: True if CAPTCHA was completed, False otherwise
+        """
+        driver = self._get_driver()
+        captcha_selectors = [
+            "iframe[title*='reCAPTCHA']",
+            "iframe[src*='captcha']",
+            "iframe[src*='challenge']",
+            "[data-testid='challenge_response']",
+            "#captcha-challenge",
+            "[aria-label*='CAPTCHA']",
+            "[aria-label*='verification']"
+        ]
+        
+        try:
+            # Check for CAPTCHA presence
+            for selector in captcha_selectors:
+                try:
+                    element = WebDriverWait(driver, 5).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                    )
+                    if element.is_displayed():
+                        logger.info(f"Found CAPTCHA element: {selector}")
+                        
+                        # Notify user
+                        logger.warning("CAPTCHA detected - requires manual intervention")
+                        logger.info("Waiting for manual CAPTCHA completion...")
+                        
+                        # Wait for CAPTCHA completion
+                        try:
+                            WebDriverWait(driver, timeout).until_not(
+                                lambda d: any(
+                                    d.find_elements(By.CSS_SELECTOR, s) 
+                                    for s in captcha_selectors
+                                )
+                            )
+                            logger.info("CAPTCHA appears to be completed")
+                            await asyncio.sleep(2)  # Wait for any post-CAPTCHA processing
+                            return True
+                        except TimeoutException:
+                            logger.error("CAPTCHA not completed within timeout")
+                            return False
+                except TimeoutException:
+                    continue
+            
+            return True  # No CAPTCHA found
+            
+        except Exception as e:
+            logger.error(f"Error handling CAPTCHA: {str(e)}")
+            return False
+
     async def _ensure_logged_in(self) -> bool:
         """Ensure we are logged in and on the home page."""
         try:
+            driver = self._get_driver()
             # Check if we're already on home page and logged in
-            if 'home' in self.driver.current_url.lower() and not 'login' in self.driver.current_url.lower():
+            if 'home' in driver.current_url.lower() and not 'login' in driver.current_url.lower():
                 try:
                     # Quick check for logged-in state using multiple indicators
                     for selector in [
@@ -1003,7 +1215,7 @@ class TwitterBrowserService:
                         "[data-testid='AppTabBar_Profile_Link']"
                     ]:
                         try:
-                            WebDriverWait(self.driver, 5).until(
+                            WebDriverWait(driver, 5).until(
                                 EC.presence_of_element_located((By.CSS_SELECTOR, selector))
                             )
                             logger.info(f"Found login indicator: {selector}")
@@ -1013,38 +1225,65 @@ class TwitterBrowserService:
                 except Exception:
                     pass
             
-            # Try navigating to home
-            logger.info("Navigating to home page to verify login...")
-            self.driver.get('https://x.com/home')
-            await asyncio.sleep(5)  # Give more time for page load
-            
-            # Check current state
-            logger.info(f"Current URL after navigation: {self.driver.current_url}")
-            logger.info(f"Current title after navigation: {self.driver.title}")
-            
-            # Check for login indicators
-            for selector in [
-                "[data-testid='AppTabBar_Home_Link']",
-                "[data-testid='SideNav_NewTweet_Button']",
-                "[data-testid='AppTabBar_Profile_Link']"
-            ]:
+            # Try navigating to home with retry
+            self._reset_backoff()
+            for attempt in range(self._max_retries):
                 try:
-                    WebDriverWait(self.driver, 10).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, selector))
-                    )
-                    logger.info(f"Found login indicator: {selector}")
-                    return True
-                except TimeoutException:
-                    continue
+                    logger.info(f"Navigating to home page (attempt {attempt + 1}/{self._max_retries})...")
+                    driver = self._get_driver()
+                    driver.get('https://x.com/home')
+                    await asyncio.sleep(5)  # Give more time for page load
+                    
+                    # Check current state
+                    driver = self._get_driver()
+                    logger.info(f"Current URL after navigation: {driver.current_url}")
+                    logger.info(f"Current title after navigation: {driver.title}")
+                    
+                    # Check for login indicators with improved error handling
+                    login_indicators = [
+                        "[data-testid='AppTabBar_Home_Link']",
+                        "[data-testid='SideNav_NewTweet_Button']",
+                        "[data-testid='AppTabBar_Profile_Link']"
+                    ]
+                    
+                    for selector in login_indicators:
+                        try:
+                            driver = self._get_driver()
+                            WebDriverWait(driver, 10).until(
+                                EC.presence_of_element_located((By.CSS_SELECTOR, selector))
+                            )
+                            logger.info(f"Found login indicator: {selector}")
+                            self._reset_backoff()  # Reset on success
+                            return True
+                        except TimeoutException:
+                            continue
+                    
+                    # If we get here, no indicators were found
+                    if attempt < self._max_retries - 1:
+                        logger.warning("No login indicators found, retrying...")
+                        await self._exponential_backoff()
+                    else:
+                        logger.error("Failed to find any login indicators after all retries")
+                        return False
+                        
+                except WebDriverException as e:
+                    logger.error(f"Browser error during home page navigation (attempt {attempt + 1}): {str(e)}")
+                    if attempt == self._max_retries - 1:
+                        return False
+                    await self._exponential_backoff()
             
             # If we get here, we're not logged in
             logger.error("Not logged in, attempting to re-login")
             if self.credentials:
                 # Clear cookies and storage before re-login
-                self.driver.delete_all_cookies()
-                self.driver.execute_script("window.localStorage.clear();")
-                self.driver.execute_script("window.sessionStorage.clear();")
-                await asyncio.sleep(1)
+                try:
+                    driver = self._get_driver()
+                    driver.delete_all_cookies()
+                    driver.execute_script("window.localStorage.clear();")
+                    driver.execute_script("window.sessionStorage.clear();")
+                    await asyncio.sleep(1)
+                except RuntimeError:
+                    logger.error("Browser driver not initialized")
                 
                 return await self.login(self.credentials['username'], self.credentials['password'])
             return False
@@ -1053,7 +1292,8 @@ class TwitterBrowserService:
             logger.error(f"Error checking login state: {str(e)}")
             if hasattr(self, 'driver') and self.driver:
                 logger.error(f"Current URL: {self.driver.current_url}")
-                logger.error(f"Current title: {self.driver.title}")
+                driver = self._get_driver()
+                logger.error(f"Current title: {driver.title}")
             return False
 
     async def create_space(self, title: str) -> Optional[str]:
@@ -1069,25 +1309,45 @@ class TwitterBrowserService:
             
             # Navigate to home page first
             logger.info("Navigating to home page...")
-            self.driver.get('https://x.com/home')
-            await asyncio.sleep(3)
-            
-            # Log current state
-            logger.info(f"Current URL: {self.driver.current_url}")
-            logger.info(f"Current title: {self.driver.title}")
-            
-            # Click Spaces button
-            logger.info("Looking for Spaces button...")
             try:
-                spaces_button = WebDriverWait(self.driver, 10).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid='AppTabBar_Audio_Link']"))
-                )
-                spaces_button.click()
-                await asyncio.sleep(2)
-            except TimeoutException:
-                logger.error("Could not find Spaces button")
-                logger.error(f"Page source preview: {self.driver.page_source[:1000]}")
+                driver = self._get_driver()
+                driver.get('https://x.com/home')
+                await asyncio.sleep(3)
+                
+                # Log current state
+                logger.info(f"Current URL: {driver.current_url}")
+                logger.info(f"Current title: {driver.title}")
+            except RuntimeError:
+                logger.error("Browser driver not initialized")
                 return None
+            
+            # Click Spaces button with retry
+            self._reset_backoff()
+            for attempt in range(self._max_retries):
+                try:
+                    logger.info(f"Looking for Spaces button (attempt {attempt + 1}/{self._max_retries})...")
+                    spaces_button = WebDriverWait(self.driver, 10).until(
+                        EC.presence_of_element_located((By.CSS_SELECTOR, "[data-testid='AppTabBar_Audio_Link']"))
+                    )
+                    spaces_button.click()
+                    await asyncio.sleep(2)
+                    self._reset_backoff()  # Reset on success
+                    break
+                except TimeoutException as e:
+                    logger.error(f"Could not find Spaces button (attempt {attempt + 1}): {str(e)}")
+                    if attempt == self._max_retries - 1:
+                        logger.error("Exceeded maximum retry attempts")
+                        try:
+                            driver = self._get_driver()
+                            logger.error(f"Page source preview: {driver.page_source[:1000]}")
+                        except RuntimeError:
+                            logger.error("Browser driver not initialized")
+                        return None
+                    logger.info(f"Retrying with backoff delay: {self._backoff_delay}s")
+                    await self._exponential_backoff()
+                except Exception as e:
+                    logger.error(f"Unexpected error clicking Spaces button: {str(e)}")
+                    return None
             
             # Click Create Space button
             logger.info("Looking for Create Space button...")
@@ -1097,14 +1357,21 @@ class TwitterBrowserService:
             create_button.click()
             await asyncio.sleep(2)
             
+            # Check for CAPTCHA after clicking create button
+            if await self._handle_captcha():
+                logger.info("CAPTCHA handled during space creation")
+            else:
+                logger.error("Failed to handle CAPTCHA during space creation")
+                return None
+            
             # Set title
             logger.info("Looking for title input...")
             title_input = WebDriverWait(self.driver, 10).until(
                 EC.presence_of_element_located((By.XPATH, "//input[@placeholder='What do you want to talk about?']"))
             )
             title_input.clear()
-            title_input.send_keys(title)
-            await asyncio.sleep(1)
+            await self._type_like_human(title_input, title)
+            await asyncio.sleep(random.uniform(0.5, 1.0))
             
             # Start Space
             logger.info("Looking for Start Space button...")
@@ -1112,37 +1379,47 @@ class TwitterBrowserService:
                 EC.element_to_be_clickable((By.XPATH, "//span[text()='Start your Space']"))
             )
             
-            # Log pre-click state
-            logger.info(f"Pre-click URL: {self.driver.current_url}")
-            logger.info(f"Pre-click title: {self.driver.title}")
-            
-            start_button.click()
-            await asyncio.sleep(3)
-            
-            # Log post-click state
-            logger.info(f"Post-click URL: {self.driver.current_url}")
-            logger.info(f"Post-click title: {self.driver.title}")
+            # Log pre-click and post-click state
+            try:
+                driver = self._get_driver()
+                logger.info(f"Pre-click URL: {driver.current_url}")
+                logger.info(f"Pre-click title: {driver.title}")
+                
+                start_button.click()
+                await asyncio.sleep(3)
+                
+                logger.info(f"Post-click URL: {driver.current_url}")
+                logger.info(f"Post-click title: {driver.title}")
+            except RuntimeError:
+                logger.error("Browser driver not initialized")
+                return None
             
             # Get Space ID from URL
             try:
-                WebDriverWait(self.driver, 20).until(
-                    lambda driver: 'spaces' in driver.current_url.lower()
+                driver = self._get_driver()
+                WebDriverWait(driver, 20).until(
+                    lambda d: 'spaces' in d.current_url.lower()
                 )
-                space_id = self.driver.current_url.split('/')[-1]
+                space_id = driver.current_url.split('/')[-1]
                 logger.info(f"Successfully created Space with ID: {space_id}")
                 return space_id
             except TimeoutException:
                 logger.error("Could not verify Space creation")
-                logger.error(f"Current URL: {self.driver.current_url}")
-                logger.error(f"Current title: {self.driver.title}")
-                logger.error(f"Page source preview: {self.driver.page_source[:1000]}")
+                try:
+                    driver = self._get_driver()
+                    logger.error(f"Current URL: {driver.current_url}")
+                    logger.error(f"Current title: {driver.title}")
+                    logger.error(f"Page source preview: {driver.page_source[:1000]}")
+                except RuntimeError:
+                    logger.error("Browser driver not initialized")
                 return None
             
         except Exception as e:
             logger.error(f"Failed to create Space: {str(e)}")
             if hasattr(self, 'driver') and self.driver:
                 logger.error(f"Current URL: {self.driver.current_url}")
-                logger.error(f"Current title: {self.driver.title}")
+                driver = self._get_driver()
+                logger.error(f"Current title: {driver.title}")
             return None
     
     async def end_space(self, space_id: str) -> bool:
@@ -1151,7 +1428,12 @@ class TwitterBrowserService:
             if not self.driver:
                 await self.setup_browser()
             
-            self.driver.get(f'https://twitter.com/i/spaces/{space_id}')
+            try:
+                driver = self._get_driver()
+                driver.get(f'https://twitter.com/i/spaces/{space_id}')
+            except RuntimeError:
+                logger.error("Browser driver not initialized")
+                return False
             
             # Click end Space button
             end_button = WebDriverWait(self.driver, 10).until(
@@ -1171,22 +1453,24 @@ class TwitterBrowserService:
             logger.error(f"Failed to end Space: {str(e)}")
             return False
     
-    def cleanup(self):
+    def cleanup(self) -> None:
         """Clean up browser resources."""
-        if self.driver:
+        # Clean up browser resources
+        if self.driver is not None:
             try:
                 # Get all window handles and close them
                 try:
                     for handle in self.driver.window_handles:
                         self.driver.switch_to.window(handle)
                         self.driver.close()
-                except:
+                except Exception:
                     pass
                 
                 # Quit the driver
-                self.driver.quit()
-            except Exception as e:
-                logger.error(f"Error quitting driver: {str(e)}")
+                try:
+                    self.driver.quit()
+                except Exception as e:
+                    logger.error(f"Error quitting driver: {str(e)}")
             finally:
                 self.driver = None
         
@@ -1205,11 +1489,14 @@ class TwitterBrowserService:
                 logger.error(f"Error killing chrome processes: {str(e)}")
         
         # Clean up temporary directory
-        if hasattr(self, '_temp_dir') and self._temp_dir:
+        if self._temp_dir is not None:
+            temp_dir = self._temp_dir  # Store in local var for type safety
             try:
-                shutil.rmtree(self._temp_dir, ignore_errors=True)
-                logger.info(f"Cleaned up temporary directory: {self._temp_dir}")
+                if os.path.exists(temp_dir):
+                    shutil.rmtree(temp_dir, ignore_errors=True)
+                    logger.info(f"Cleaned up temporary directory: {temp_dir}")
             except Exception as e:
-                logger.error(f"Failed to clean up directory {self._temp_dir}: {str(e)}")
-            self._temp_dir = None
-            self._session_id = None
+                logger.error(f"Failed to clean up directory {temp_dir}: {str(e)}")
+            finally:
+                self._temp_dir = ""  # Reset to empty string
+                self._session_id = ""  # Reset to empty string
