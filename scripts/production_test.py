@@ -1,22 +1,41 @@
 import asyncio
 import os
 import logging
-
-# Configure logging
-logging.basicConfig(level=logging.INFO,
-                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
 from app.services.twitter_browser_service import TwitterBrowserService
 from app.services.voice_generator import ElevenLabsGenerator
 from app.services.feature_flags import FeatureFlags
+from app.services.twitter_account_manager import TwitterAccountManager
+
+# Configure logging
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.INFO,
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
 async def test_browser_login():
     """Test browser login with provided credentials."""
     # Start with just one account for testing
-    account_prefix = "TWITTER_BROWSER_1"
     account_name = "Host Account"
+    character = "Host"
+    
+    # Initialize account manager
+    account_manager = TwitterAccountManager()
+    
+    # Get credentials from environment variables
+    username = os.getenv("TWITTER_BROWSER_1_USERNAME")
+    password = os.getenv("TWITTER_BROWSER_1_PASSWORD")
+    
+    if not username or not password:
+        print(f"Missing credentials for {account_name}")
+        return
+        
+    # Set credentials in account manager's browser accounts
+    account_manager.browser_accounts[character] = {
+        "username": username,
+        "password": password
+    }
     
     print(f"\nTesting {account_name}...")
     service = None
@@ -36,19 +55,18 @@ async def test_browser_login():
                 else:
                     raise
         
-        username = os.getenv(f"{account_prefix}_USERNAME")
-        password = os.getenv(f"{account_prefix}_PASSWORD")
-        
-        if not username or not password:
+        # Get credentials from account manager
+        creds = account_manager.get_browser_credentials(character)
+        if not creds:
             print(f"Missing credentials for {account_name}")
             return
             
-        print(f"Attempting login for {username}...")
+        print(f"Attempting login for {creds['username']}...")
         
         # Try login with timeout
         try:
             async with asyncio.timeout(30):  # 30 second timeout
-                success = await service.login(username, password)
+                success = await service.login(creds["username"], creds["password"])
         except asyncio.TimeoutError:
             print("Login attempt timed out")
             return
@@ -103,6 +121,7 @@ async def main():
     print("Starting production tests...")
     
     # Enable browser automation
+    os.environ['USE_BROWSER_AUTOMATION'] = 'true'
     flags = FeatureFlags()
     print(f"\nFeature flags status:")
     print(f"Browser automation: {flags.is_enabled('use_browser_automation')}")
