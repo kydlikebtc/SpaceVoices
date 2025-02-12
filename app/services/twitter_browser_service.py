@@ -892,43 +892,44 @@ class TwitterBrowserService:
                 logger.error(f"Error during password entry and login: {str(e)}")
                 return False
             
-            # Wait for navigation and verify login with retry
-            max_verify_attempts = 3
-            for verify_attempt in range(max_verify_attempts):
-                try:
-                    # Wait for URL change with increased timeout
-                    logger.info("Waiting for navigation away from login page...")
-                    WebDriverWait(self.driver, 15).until(
-                        lambda driver: 'flow/login' not in driver.current_url.lower()
-                    )
-                    
-                    # Check for verification/error pages
-                    current_url = self.driver.current_url.lower()
-                    if any(x in current_url for x in ['challenge', 'verify', 'error']):
-                        logger.error(f"Hit verification/error page: {current_url}")
-                        if verify_attempt < max_verify_attempts - 1:
-                            logger.info("Retrying verification...")
-                            await asyncio.sleep(2)
-                            continue
-                        return False
-                    
-                    # Navigate to home to verify login
-                    logger.info("Navigating to home page for verification...")
-                    self.driver.get('https://twitter.com/home')
-                    await asyncio.sleep(random.uniform(2.0, 4.0))
-                    
-                    # Enhanced success indicators with multiple checks
-                    success_indicators = [
-                        "[data-testid='primaryColumn']",
-                        "[data-testid='SideNav_NewTweet_Button']",
-                        "[data-testid='AppTabBar_Home_Link']",
-                        "[aria-label='Home']",
-                        "[aria-label='Timeline: Your Home Timeline']",
-                        "[data-testid='AppTabBar_Profile_Link']",
-                        "a[href='/home']",
-                        "a[href='/explore']",
-                        "div[data-testid='sidebarColumn']"
-                    ]
+            try:
+                # Wait for navigation and verify login with retry
+                max_verify_attempts = 3
+                for verify_attempt in range(max_verify_attempts):
+                    try:
+                        # Wait for URL change with increased timeout
+                        logger.info("Waiting for navigation away from login page...")
+                        WebDriverWait(self.driver, 15).until(
+                            lambda driver: 'flow/login' not in driver.current_url.lower()
+                        )
+                        
+                        # Check for verification/error pages
+                        current_url = self.driver.current_url.lower()
+                        if any(x in current_url for x in ['challenge', 'verify', 'error']):
+                            logger.error(f"Hit verification/error page: {current_url}")
+                            if verify_attempt < max_verify_attempts - 1:
+                                logger.info("Retrying verification...")
+                                await asyncio.sleep(2)
+                                continue
+                            return False
+                        
+                        # Navigate to home to verify login
+                        logger.info("Navigating to home page for verification...")
+                        self.driver.get('https://twitter.com/home')
+                        await asyncio.sleep(random.uniform(2.0, 4.0))
+                        
+                        # Enhanced success indicators with multiple checks
+                        success_indicators = [
+                            "[data-testid='primaryColumn']",
+                            "[data-testid='SideNav_NewTweet_Button']",
+                            "[data-testid='AppTabBar_Home_Link']",
+                            "[aria-label='Home']",
+                            "[aria-label='Timeline: Your Home Timeline']",
+                            "[data-testid='AppTabBar_Profile_Link']",
+                            "a[href='/home']",
+                            "a[href='/explore']",
+                            "div[data-testid='sidebarColumn']"
+                        ]
                 
                 for selector in success_indicators:
                     try:
