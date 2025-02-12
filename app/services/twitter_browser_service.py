@@ -958,7 +958,11 @@ class TwitterBrowserService:
                 
             except TimeoutException:
                 logger.error("Timeout waiting for password input or login button")
-                logger.error(f"Current URL: {self.driver.current_url}")
+                try:
+                    driver = self._get_driver()
+                    logger.error(f"Current URL: {driver.current_url}")
+                except RuntimeError:
+                    logger.error("Browser driver not initialized")
                 return False
             except Exception as e:
                 logger.error(f"Error during password entry and login: {str(e)}")
@@ -1040,7 +1044,11 @@ class TwitterBrowserService:
                 
                 # If we get here, no success indicators were found
                 logger.error("Could not verify login success")
-                logger.error(f"Current URL: {self.driver.current_url}")
+                try:
+                    driver = self._get_driver()
+                    logger.error(f"Current URL: {driver.current_url}")
+                except RuntimeError:
+                    logger.error("Browser driver not initialized")
                 return False
                 
             except TimeoutException:
@@ -1268,10 +1276,14 @@ class TwitterBrowserService:
             logger.error("Not logged in, attempting to re-login")
             if self.credentials:
                 # Clear cookies and storage before re-login
-                self.driver.delete_all_cookies()
-                self.driver.execute_script("window.localStorage.clear();")
-                self.driver.execute_script("window.sessionStorage.clear();")
-                await asyncio.sleep(1)
+                try:
+                    driver = self._get_driver()
+                    driver.delete_all_cookies()
+                    driver.execute_script("window.localStorage.clear();")
+                    driver.execute_script("window.sessionStorage.clear();")
+                    await asyncio.sleep(1)
+                except RuntimeError:
+                    logger.error("Browser driver not initialized")
                 
                 return await self.login(self.credentials['username'], self.credentials['password'])
             return False
@@ -1297,12 +1309,17 @@ class TwitterBrowserService:
             
             # Navigate to home page first
             logger.info("Navigating to home page...")
-            self.driver.get('https://x.com/home')
-            await asyncio.sleep(3)
-            
-            # Log current state
-            logger.info(f"Current URL: {self.driver.current_url}")
-            logger.info(f"Current title: {self.driver.title}")
+            try:
+                driver = self._get_driver()
+                driver.get('https://x.com/home')
+                await asyncio.sleep(3)
+                
+                # Log current state
+                logger.info(f"Current URL: {driver.current_url}")
+                logger.info(f"Current title: {driver.title}")
+            except RuntimeError:
+                logger.error("Browser driver not initialized")
+                return None
             
             # Click Spaces button with retry
             self._reset_backoff()
@@ -1320,7 +1337,11 @@ class TwitterBrowserService:
                     logger.error(f"Could not find Spaces button (attempt {attempt + 1}): {str(e)}")
                     if attempt == self._max_retries - 1:
                         logger.error("Exceeded maximum retry attempts")
-                        logger.error(f"Page source preview: {self.driver.page_source[:1000]}")
+                        try:
+                            driver = self._get_driver()
+                            logger.error(f"Page source preview: {driver.page_source[:1000]}")
+                        except RuntimeError:
+                            logger.error("Browser driver not initialized")
                         return None
                     logger.info(f"Retrying with backoff delay: {self._backoff_delay}s")
                     await self._exponential_backoff()
@@ -1358,16 +1379,20 @@ class TwitterBrowserService:
                 EC.element_to_be_clickable((By.XPATH, "//span[text()='Start your Space']"))
             )
             
-            # Log pre-click state
-            logger.info(f"Pre-click URL: {self.driver.current_url}")
-            logger.info(f"Pre-click title: {self.driver.title}")
-            
-            start_button.click()
-            await asyncio.sleep(3)
-            
-            # Log post-click state
-            logger.info(f"Post-click URL: {self.driver.current_url}")
-            logger.info(f"Post-click title: {self.driver.title}")
+            # Log pre-click and post-click state
+            try:
+                driver = self._get_driver()
+                logger.info(f"Pre-click URL: {driver.current_url}")
+                logger.info(f"Pre-click title: {driver.title}")
+                
+                start_button.click()
+                await asyncio.sleep(3)
+                
+                logger.info(f"Post-click URL: {driver.current_url}")
+                logger.info(f"Post-click title: {driver.title}")
+            except RuntimeError:
+                logger.error("Browser driver not initialized")
+                return None
             
             # Get Space ID from URL
             try:
