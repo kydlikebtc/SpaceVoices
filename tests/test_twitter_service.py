@@ -57,13 +57,11 @@ async def test_create_space_with_character(spaces_service, mock_account_manager)
 
 @pytest.mark.asyncio
 async def test_create_space_invalid_character(spaces_service, mock_account_manager):
-    # Set up mock to return None for invalid character
-    mock_account_manager.get_client.return_value = None
-    
     # Test creating a space with invalid character
-    with pytest.raises(ValueError, match="Invalid character"):
+    with pytest.raises(TwitterSpacesError) as exc_info:
         await spaces_service.create_space(
             title="Test Space",
             description="A test space",
             character="InvalidCharacter"
         )
+    assert "Invalid character" in str(exc_info.value)

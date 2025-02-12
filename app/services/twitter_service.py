@@ -16,11 +16,6 @@ class TwitterSpacesService:
         """Initialize the service with multi-account support."""
         self.account_manager = TwitterAccountManager()
         self.interaction_services: Dict[str, SpacesInteractionService] = {}
-        
-        # Initialize default host account
-        host_client = self.account_manager.get_client("Host")
-        if not host_client:
-            raise ValueError("Missing required Host account configuration")
     
     async def create_space(
         self,
@@ -49,7 +44,7 @@ class TwitterSpacesService:
             # Get client for character
             client = self.account_manager.get_client(character)
             if not client:
-                raise ValueError(f"Invalid character: {character}")
+                raise TwitterSpacesError(f"Invalid character: {character}")
             
             # Add AI disclosure to description
             ai_disclosure = "[AI-GENERATED CONTENT] This Space features AI-generated voices and content."
