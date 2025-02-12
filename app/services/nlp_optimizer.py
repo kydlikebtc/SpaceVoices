@@ -78,9 +78,9 @@ class NLPOptimizer:
         common_words = prev_words.intersection(curr_words)
         
         # Define word categories with different weights
-        dialogue_words = {'i', 'you', 'am', 'are', 'is', 'doing', 'thanks', 'please'}  # Weight: 4
+        dialogue_words = {'i', 'you', 'am', 'are', 'is', 'doing', 'thanks', 'please', 'good', 'great'}  # Weight: 4
         question_words = {'how', 'what', 'why', 'when', 'where', 'who'}  # Weight: 3
-        greeting_words = {'hello', 'hi', 'hey', 'good', 'great', 'bye', 'goodbye'}  # Weight: 3
+        greeting_words = {'hello', 'hi', 'hey', 'bye', 'goodbye', 'there', 'morning', 'afternoon', 'evening'}  # Weight: 3
         
         # Calculate weighted overlap
         def get_word_weight(word: str) -> int:
@@ -92,10 +92,17 @@ class NLPOptimizer:
         
         # Calculate weighted scores with emphasis on dialogue patterns
         def get_dialogue_bonus(words: set[str]) -> float:
-            # Give bonus for question-answer patterns
+            # Give bonus for question-answer patterns and greetings
             has_question = any(w in question_words for w in words)
             has_response = any(w in {'yes', 'no', 'thanks', 'thank', 'good', 'great', 'ok', 'okay'} for w in words)
-            return 0.3 if (has_question and has_response) else 0.0
+            has_greeting = any(w in greeting_words for w in words)
+            
+            bonus = 0.0
+            if has_question and has_response:
+                bonus += 0.3
+            if has_greeting:
+                bonus += 0.3
+            return min(0.6, bonus)
         
         # Base score from weighted word overlap
         overlap_weight = sum(get_word_weight(w) for w in common_words)
