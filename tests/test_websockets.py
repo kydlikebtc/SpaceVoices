@@ -37,7 +37,7 @@ async def test_space_event_manager():
         data={"space_id": space_id, "state": "live"}
     )
     await manager.broadcast_event(space_id, event)
-    mock_ws.send_json.assert_called_once_with(event.dict())
+    mock_ws.send_json.assert_called_once_with(event.model_dump())
     
     # Test disconnection
     manager.disconnect(space_id)
@@ -58,9 +58,11 @@ async def test_handle_space_events(mock_websocket, monkeypatch):
     
     mock_service.interaction_services = {"Host": mock_interaction}
     
-    def mock_init():
-        return mock_service
-    monkeypatch.setattr(TwitterSpacesService, "__new__", mock_init)
+    def mock_init(self):
+        self.account_manager = Mock()
+        self.interaction_services = {"Host": mock_interaction}
+        return self
+    monkeypatch.setattr(TwitterSpacesService, "__init__", mock_init)
     
     # Test successful connection
     space_id = "test_space_123"

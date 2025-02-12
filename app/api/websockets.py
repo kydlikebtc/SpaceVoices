@@ -24,7 +24,7 @@ class SpaceEventManager:
         """Broadcast an event to connected clients."""
         if space_id in self.active_connections:
             try:
-                await self.active_connections[space_id].send_json(event.dict())
+                await self.active_connections[space_id].send_json(event.model_dump())
             except Exception as e:
                 self.disconnect(space_id)
 
