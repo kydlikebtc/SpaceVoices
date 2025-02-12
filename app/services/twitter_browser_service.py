@@ -1396,18 +1396,22 @@ class TwitterBrowserService:
             
             # Get Space ID from URL
             try:
-                WebDriverWait(self.driver, 20).until(
-                    lambda driver: 'spaces' in driver.current_url.lower()
+                driver = self._get_driver()
+                WebDriverWait(driver, 20).until(
+                    lambda d: 'spaces' in d.current_url.lower()
                 )
-                space_id = self.driver.current_url.split('/')[-1]
+                space_id = driver.current_url.split('/')[-1]
                 logger.info(f"Successfully created Space with ID: {space_id}")
                 return space_id
             except TimeoutException:
                 logger.error("Could not verify Space creation")
-                logger.error(f"Current URL: {self.driver.current_url}")
-                driver = self._get_driver()
-                logger.error(f"Current title: {driver.title}")
-                logger.error(f"Page source preview: {self.driver.page_source[:1000]}")
+                try:
+                    driver = self._get_driver()
+                    logger.error(f"Current URL: {driver.current_url}")
+                    logger.error(f"Current title: {driver.title}")
+                    logger.error(f"Page source preview: {driver.page_source[:1000]}")
+                except RuntimeError:
+                    logger.error("Browser driver not initialized")
                 return None
             
         except Exception as e:
@@ -1424,7 +1428,12 @@ class TwitterBrowserService:
             if not self.driver:
                 await self.setup_browser()
             
-            self.driver.get(f'https://twitter.com/i/spaces/{space_id}')
+            try:
+                driver = self._get_driver()
+                driver.get(f'https://twitter.com/i/spaces/{space_id}')
+            except RuntimeError:
+                logger.error("Browser driver not initialized")
+                return False
             
             # Click end Space button
             end_button = WebDriverWait(self.driver, 10).until(
@@ -1489,5 +1498,5 @@ class TwitterBrowserService:
             except Exception as e:
                 logger.error(f"Failed to clean up directory {temp_dir}: {str(e)}")
             finally:
-                self._temp_dir = None
-                self._session_id = None
+                self._temp_dir = ""  # Reset to empty string
+                self._session_id = ""  # Reset to empty string
