@@ -51,9 +51,18 @@ class SpacesInteractionService:
                 # Create and emit event
                 event = SpaceEvent(
                     type="space_update",
-                    data={"space_id": space_id, "state": space.state}
+                    data={
+                        "space_id": space_id,
+                        "state": space.state,
+                        "participant_count": space.participant_count
+                    }
                 )
                 await self._emit_event(event)
+                
+                # Break if space is ended
+                if space.state == "ended":
+                    await self.stop_monitoring(space_id)
+                    break
                 
                 # Reset backoff on successful request
                 self.backoff_delay = 5

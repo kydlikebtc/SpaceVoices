@@ -7,8 +7,14 @@ from app.models.space_event import SpaceEvent
 
 @pytest.fixture
 def mock_twitter_client():
+    class MockSpace:
+        def __init__(self):
+            self.state = "live"
+            self.participant_count = 0
+    
+    mock_space = MockSpace()
     client = Mock(spec=tweepy.Client)
-    client.get_space = Mock(return_value={"state": "live"})
+    client.get_space = Mock(return_value=mock_space)
     return client
 
 @pytest.fixture
