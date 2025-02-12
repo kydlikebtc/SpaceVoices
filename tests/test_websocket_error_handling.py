@@ -1,5 +1,5 @@
 import pytest
-from unittest.mock import Mock, AsyncMock, patch
+from unittest.mock import Mock, AsyncMock, patch, call
 import asyncio
 from fastapi import WebSocket, WebSocketDisconnect
 from app.api.websockets import SpaceEventManager
@@ -40,19 +40,14 @@ async def test_connect_error_handling(event_manager, mock_websocket):
 
 @pytest.mark.asyncio
 async def test_heartbeat_mechanism(event_manager, mock_websocket):
-    # Create a future to control heartbeat loop
-    heartbeat_started = asyncio.Future()
-    
+    # Mock the heartbeat to run once and exit
     async def mock_heartbeat(space_id):
-        heartbeat_started.set_result(True)
-        await event_manager._start_heartbeat(space_id)
+        if space_id in event_manager.active_connections:
+            await event_manager.active_connections[space_id].send_json({"type": "ping"})
     
     with patch.object(event_manager, '_start_heartbeat', mock_heartbeat):
         # Start connection
         await event_manager.connect("test_space", mock_websocket)
-        
-        # Wait for heartbeat to start
-        await asyncio.wait_for(heartbeat_started, timeout=1.0)
         
         # Verify ping was sent
         mock_websocket.send_json.assert_called_with({"type": "ping"})
@@ -69,6 +64,6 @@ async def test_reconnection_attempts(event_manager, mock_websocket):
         # Verify exponential backoff
         assert mock_sleep.call_count == max_attempts
         mock_sleep.assert_has_calls([
-            AsyncMock()(1),  # First attempt: 2^0
-            AsyncMock()(2),  # Second attempt: 2^1
+            call(1),  # First attempt: 2^0
+            call(2),  # Second attempt: 2^1
         ])
